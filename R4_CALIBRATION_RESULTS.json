@@ -1,0 +1,440 @@
+{
+  "schemaVersion": 1,
+  "scriptVersion": 1,
+  "physicsVersion": "4.1.0",
+  "generatedAt": "2026-07-25T17:56:31.238Z",
+  "contract": {
+    "evaluationSeparatedFromTraining": true,
+    "observationNormalizationUpdatedDuringEvaluation": false,
+    "failedSeedsRetained": true,
+    "motorBridgeSemantics": "retired after R4: static 2D traversal duplicates flat-ground driving",
+    "population": 10,
+    "generations": 8,
+    "trainingSeeds": [
+      101,
+      202,
+      303
+    ],
+    "heldOutVariants": [
+      {
+        "id": "low-g",
+        "gravity": 0.38,
+        "groundFriction": 0.76
+      },
+      {
+        "id": "high-g",
+        "gravity": 0.42,
+        "groundFriction": 0.84
+      }
+    ]
+  },
+  "deterministicEvidence": [
+    "scripts/smoke-hang-time.ts",
+    "scripts/smoke-stay-tall.ts",
+    "scripts/smoke-obstacle-climb.ts",
+    "scripts/smoke-carry-ball.ts",
+    "scripts/smoke-hazard-dash.ts",
+    "scripts/smoke-balance-beam.ts",
+    "scripts/smoke-motor-technical.ts",
+    "scripts/smoke-attempt-isolation.ts",
+    "scripts/smoke-support-causality.ts"
+  ],
+  "calibrationRows": [
+    {
+      "family": "R1",
+      "goal": "JUMP_HANG_TIME",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 140,
+      "criterion": "one supported-takeoff bout beats inflated episode totals"
+    },
+    {
+      "family": "R1",
+      "goal": "STAY_UPRIGHT",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 173,
+      "criterion": "supported posture history beats final-pose/legacy survival"
+    },
+    {
+      "family": "R1",
+      "goal": "OBSTACLE_CLIMB",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 1240,
+      "criterion": "ordered authored mounts beat free height and bypass travel"
+    },
+    {
+      "family": "R1",
+      "goal": "CARRY_BALL",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 264,
+      "criterion": "collision-proven lifted transport beats proximity/uncontacted motion"
+    },
+    {
+      "family": "R1",
+      "goal": "DODGEBALL",
+      "inert": 0,
+      "shortcut": 200,
+      "reference": 800,
+      "criterion": "ordered hazards plus supported finish beat camping/endpoint shaping"
+    },
+    {
+      "family": "R1",
+      "goal": "BALANCE_BEAM",
+      "inert": 0,
+      "shortcut": 30,
+      "reference": 1000,
+      "criterion": "continuous authored-beam traversal beats end camping"
+    },
+    {
+      "family": "R1",
+      "goal": "MOTOR_SLALOM",
+      "inert": 0,
+      "shortcut": 100,
+      "reference": 1100,
+      "criterion": "ordered supported checkpoints and finish beat shaping-only travel"
+    },
+    {
+      "family": "R2",
+      "goal": "LONG_JUMP",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "JUMP_LEFT",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "FLIGHT_RIGHT",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "FLIGHT_LEFT",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "JUMP_ACROBATICS",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "FLIGHT_ACROBATICS",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 240,
+      "criterion": "one completed best bout beats inflated episode-wide totals"
+    },
+    {
+      "family": "R2",
+      "goal": "FLIGHT_LAND",
+      "inert": 0,
+      "shortcut": 138,
+      "reference": 420,
+      "criterion": "one complete climb-descent-stick bout beats partial-attempt shaping"
+    },
+    {
+      "family": "R3",
+      "goal": "AERIAL_CROSSING",
+      "inert": 0,
+      "shortcut": 180,
+      "reference": 400,
+      "criterion": "far-side support completion beats capped unlanded flight shaping"
+    },
+    {
+      "family": "R3",
+      "goal": "MOTOR_BRIDGE",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 1090,
+      "criterion": "continuous authored-bridge support beats endpoint bypass"
+    },
+    {
+      "family": "R3",
+      "goal": "KICK_GOAL",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 400,
+      "criterion": "contact-caused goal beats uncontacted ball travel"
+    },
+    {
+      "family": "R3",
+      "goal": "HIT_TARGET",
+      "inert": 0,
+      "shortcut": 0,
+      "reference": 120,
+      "criterion": "a contact-caused target hit beats contact or loft without a hit"
+    }
+  ],
+  "learnedTracks": [
+    {
+      "family": "R1",
+      "goal": "JUMP_HANG_TIME",
+      "blueprint": "Flapper",
+      "episodeFrames": 360,
+      "seeds": [
+        {
+          "seed": 101,
+          "generation0Best": 139.0288241575824,
+          "trainingBest": 182,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 129.99896218705902,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 115.03252895615114,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        },
+        {
+          "seed": 202,
+          "generation0Best": 159.07856455671424,
+          "trainingBest": 232,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 224,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 166,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        },
+        {
+          "seed": 303,
+          "generation0Best": 118.55727815614645,
+          "trainingBest": 168,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 116,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 172,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        }
+      ]
+    },
+    {
+      "family": "R2",
+      "goal": "FLIGHT_RIGHT",
+      "blueprint": "Flapper",
+      "episodeFrames": 240,
+      "seeds": [
+        {
+          "seed": 101,
+          "generation0Best": 144.63369276898078,
+          "trainingBest": 288.3126980762855,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 16.150841283955064,
+              "champion": 269.9127871615656,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 15.429949281452418,
+              "champion": 255.68465526510118,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        },
+        {
+          "seed": 202,
+          "generation0Best": 171.0681426304693,
+          "trainingBest": 281.06064437495723,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 16.150841283955064,
+              "champion": 310.00063416363963,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 15.429949281452418,
+              "champion": 187.4025584497427,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        },
+        {
+          "seed": 303,
+          "generation0Best": 162.17456697742202,
+          "trainingBest": 537.4004966058752,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 16.150841283955064,
+              "champion": 305.56549392782824,
+              "behaviouralPass": true,
+              "completion": true
+            },
+            {
+              "variant": "high-g",
+              "inert": 15.429949281452418,
+              "champion": 293.7189331961563,
+              "behaviouralPass": true,
+              "completion": true
+            }
+          ],
+          "passed": true
+        }
+      ]
+    },
+    {
+      "family": "R3",
+      "goal": "MOTOR_BRIDGE",
+      "blueprint": "Motor Cart",
+      "episodeFrames": 900,
+      "seeds": [
+        {
+          "seed": 101,
+          "generation0Best": 0,
+          "trainingBest": 0,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            }
+          ],
+          "passed": false
+        },
+        {
+          "seed": 202,
+          "generation0Best": 0,
+          "trainingBest": 0,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            }
+          ],
+          "passed": false
+        },
+        {
+          "seed": 303,
+          "generation0Best": 0,
+          "trainingBest": 0,
+          "heldOut": [
+            {
+              "variant": "low-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            },
+            {
+              "variant": "high-g",
+              "inert": 0,
+              "champion": 0,
+              "behaviouralPass": false,
+              "completion": false
+            }
+          ],
+          "passed": false
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "rewardOrderingPassed": true,
+    "activeGoalCount": 43,
+    "retiredGoals": [
+      "MOTOR_BRIDGE"
+    ],
+    "learnedTrackPassedSeeds": [
+      {
+        "family": "R1",
+        "goal": "JUMP_HANG_TIME",
+        "passed": 3,
+        "total": 3
+      },
+      {
+        "family": "R2",
+        "goal": "FLIGHT_RIGHT",
+        "passed": 3,
+        "total": 3
+      },
+      {
+        "family": "R3",
+        "goal": "MOTOR_BRIDGE",
+        "passed": 0,
+        "total": 3
+      }
+    ],
+    "note": "Learned-policy results are behavioural evidence, not a reward-truth override; failures remain explicit."
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "scriptVersion": 1,
+  "physicsVersion": "4.1.0",
+  "generatedAt": "2026-07-25T18:10:59.061Z",
+  "goal": "ROUGH_TERRAIN_TRAVERSE",
+  "blueprint": "Motor Cart",
+  "contract": {
+    "existingPhysicsOnly": true,
+    "observationActionDimensionsChanged": false,
+    "evaluationSeparatedFromTraining": true,
+    "observationNormalizationUpdatedDuringEvaluation": false,
+    "failedSeedsRetained": true,
+    "population": 12,
+    "generations": 10,
+    "episodeFrames": 1400,
+    "trainingSeeds": [
+      101,
+      202,
+      303
+    ],
+    "trainingCondition": {
+      "difficulty": 1,
+      "gravity": 0.4,
+      "groundFriction": 0.8,
+      "terrainSeed": 42
+    },
+    "heldOutVariants": [
+      {
+        "id": "low-friction-short",
+        "difficulty": 0.95,
+        "gravity": 0.38,
+        "groundFriction": 0.72
+      },
+      {
+        "id": "high-friction-long",
+        "difficulty": 1.05,
+        "gravity": 0.42,
+        "groundFriction": 0.88
+      }
+    ],
+    "behaviouralCriterion": "Frozen champion crosses all three ordered markers and the supported finish, scores at least 1200, and beats inert by at least 1000 in both unseen physics/course-length variants."
+  },
+  "deterministicEvidence": {
+    "script": "scripts/smoke-rough-terrain.ts",
+    "inert": 0,
+    "endpointBypass": 0,
+    "shapingOnly": 150,
+    "allCheckpointsWithoutFinish": 750,
+    "scriptedReferenceRange": "(1250, 1350]"
+  },
+  "rejectedCandidateEvidence": {
+    "candidate": "Shuttle Run",
+    "reason": "All three exploratory seeds stopped at the one-way 350-point ceiling because the unchanged controller has no course-phase observation; adding one would violate the old-interface boundary.",
+    "exploratorySeeds": [
+      101,
+      202,
+      303
+    ],
+    "generation0Best": [
+      350,
+      350,
+      350
+    ],
+    "trainingBest": [
+      350,
+      350,
+      350
+    ]
+  },
+  "seeds": [
+    {
+      "seed": 101,
+      "generation0Best": 1309.357,
+      "trainingBest": 1319.429,
+      "heldOut": [
+        {
+          "variant": "low-friction-short",
+          "inert": 0.001,
+          "champion": 1320.143,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        },
+        {
+          "variant": "high-friction-long",
+          "inert": 0.001,
+          "champion": 1318.786,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "seed": 202,
+      "generation0Best": 1304.071,
+      "trainingBest": 1318.857,
+      "heldOut": [
+        {
+          "variant": "low-friction-short",
+          "inert": 0.001,
+          "champion": 1319.643,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        },
+        {
+          "variant": "high-friction-long",
+          "inert": 0.001,
+          "champion": 1317.643,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "seed": 303,
+      "generation0Best": 1295.643,
+      "trainingBest": 1320.643,
+      "heldOut": [
+        {
+          "variant": "low-friction-short",
+          "inert": 0.001,
+          "champion": 1321.286,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        },
+        {
+          "variant": "high-friction-long",
+          "inert": 0.001,
+          "champion": 1319.786,
+          "checkpoints": 3,
+          "supportedFinish": true,
+          "behaviouralPass": true
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "passed": true
+}

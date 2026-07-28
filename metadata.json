@@ -1,0 +1,6 @@
+{
+  "name": "Creature Locomotion Evolution Sandbox",
+  "description": "An interactive 2D point-spring physics sandbox exploring neuroevolution. Train unique creature anatomies to run, jump, balance, or climb using NEAT neural networks and genetic algorithms.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
