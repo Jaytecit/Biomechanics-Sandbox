@@ -37,8 +37,13 @@ import {
 } from './physics';
 import { createBaseGenome, crossover, mutateWeights, mutateAddConnection, mutateAddNode, cloneGenome } from './neat';
 import { CHALLENGES, loadChallengeProgress, saveChallengeProgress, clearChallengeProgress } from './challenges';
+import { evaluateChallengeConstraints } from './challengeConstraints';
 import { formatBestEver, formatLiveLeader } from './formatGoal';
-import { getGoalInfo } from './goalCatalog';
+import { getGoalInfo, recommendedGenerationDuration } from './goalCatalog';
+import {
+  calculateRewardBreakdown,
+  RewardBreakdown,
+} from './rewardBreakdown';
 import {
   breedParaPilotChild,
   eliteParaPilot,
@@ -56,6 +61,10 @@ import { StatsPanel } from './components/StatsPanel';
 import { ControlPanel } from './components/ControlPanel';
 import { Studio } from './components/Studio';
 import { DiscoveryPanel } from './components/DiscoveryPanel';
+import { SecretGoalRevealOverlay } from './components/SecretGoalRevealOverlay';
+import { evaluateSecretGoals } from './secretGoalEval';
+import { recordDiscovery, SecretGoalDiscovery } from './secretGoalProgress';
+import { SecretGoalId } from './secretGoals';
 import { GaitFingerprints } from './components/GaitFingerprints';
 import { ModelsPanel, ARENA_CHAMPIONSHIP_HREF } from './components/ModelsPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
@@ -222,7 +231,11 @@ export default function App() {
     )
   );
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
-  
+  /** Best model reward terms from the most recently completed generation */
+  const [lastGenRewards, setLastGenRewards] = useState<RewardBreakdown | null>(null);
+  const lastGenRewardsRef = useRef<RewardBreakdown | null>(null);
+  /** Prior generation's best — baseline for up/down arrows */
+  const [rewardBaseline, setRewardBaseline] = useState<RewardBreakdown | null>(null);
   const [currentGen, setCurrentGen] = useState<number>(1);
   const [bestEverFitness, setBestEverFitness] = useState<number>(0);
   const [bestEverDistance, setBestEverDistance] = useState<number>(0);
@@ -246,6 +259,7 @@ export default function App() {
   const [environmentTheme, setEnvironmentTheme] = useState<EnvironmentTheme>('meadow');
   /** When set, Freeze suggests a transfer name (source → current goal). */
   const [transferSourceName, setTransferSourceName] = useState<string | null>(null);
+  const [secretRevealQueue, setSecretRevealQueue] = useState<SecretGoalDiscovery[]>([]);
 
   const zoneTemplates = useMemo(
     () => filterTemplatesForZone(templates, activeZone),
@@ -395,6 +409,9 @@ export default function App() {
 
     if (resetHistory) {
       setGenerationHistory([]);
+      setRewardBaseline(null);
+      lastGenRewardsRef.current = null;
+      setLastGenRewards(null);
       setCurrentGen(1);
       applyPersistedBestEverBaseline(configRef.current.goal);
       setBestEverDistance(0);
@@ -507,6 +524,11 @@ export default function App() {
     if (!activeChallengeId) return;
     const challenge = CHALLENGES.find(c => c.id === activeChallengeId);
     if (!challenge) return;
+    const morphologyOk = evaluateChallengeConstraints(
+      selectedTemplate,
+      challenge.constraints
+    ).ok;
+    const scoredFitness = morphologyOk ? bestEverFitness : 0;
 
     setChallengeProgress(prev => {
       const existing = prev[challenge.id] || {
@@ -515,7 +537,7 @@ export default function App() {
         liveTarget: challenge.targetValue,
         clearCount: 0,
       };
-      const bestScore = Math.max(existing.bestScore, bestEverFitness);
+      const bestScore = Math.max(existing.bestScore, scoredFitness);
       let cleared = existing.cleared;
       let clearedAtGeneration = existing.clearedAtGeneration;
       let liveTarget = existing.liveTarget ?? challenge.targetValue;
@@ -537,7 +559,7 @@ export default function App() {
       saveChallengeProgress(next);
       return next;
     });
-  }, [bestEverFitness, currentGen, activeChallengeId]);
+  }, [bestEverFitness, currentGen, activeChallengeId, selectedTemplate]);
 
   // Handle template selection change
   const handleSelectTemplate = (template: CreatureBlueprint) => {
@@ -684,6 +706,35 @@ export default function App() {
       raiseBestEverIfBeaten(config.goal, bestFit, config.generationDuration, champName);
     }
 
+    // Secret goal discovery (champion creature, accidental triggers only)
+    if (sorted[0]) {
+      const cfg = configRef.current;
+      const champ = sorted[0];
+      const newIds = evaluateSecretGoals({
+        creature: champ,
+        activeGoal: cfg.goal,
+        arena: cfg.arena,
+        modelName: champ.blueprint.name,
+        context: 'sandbox',
+        generation: currentGen,
+      });
+      const fresh: SecretGoalDiscovery[] = [];
+      for (const id of newIds) {
+        const entry: SecretGoalDiscovery = {
+          secretGoalId: id as SecretGoalId,
+          discoveredAt: new Date().toISOString(),
+          modelName: champ.blueprint.name,
+          activeGoal: cfg.goal,
+          context: 'sandbox',
+          generation: currentGen,
+        };
+        if (recordDiscovery(entry)) fresh.push(entry);
+      }
+      if (fresh.length > 0) {
+        setSecretRevealQueue(q => [...q, ...fresh]);
+      }
+    }
+
     // Specifically track absolute distance traveled right
     const bestX = Math.max(...currentPopulation.map(c => c.currentX));
     if (bestX > bestEverDistance) {
@@ -736,6 +787,20 @@ export default function App() {
 
     setGenerationHistory(prev => [...prev, record]);
 
+    // Snapshot best model's reward terms; prior snapshot becomes the delta baseline
+    if (sorted[0]) {
+      const snapshot = calculateRewardBreakdown(
+        sorted[0],
+        config.goal,
+        sorted[0].privateWorld ?? [],
+        config.customGoal,
+        obstaclesRef.current,
+        config.paraPilotStage
+      );
+      setRewardBaseline(lastGenRewardsRef.current);
+      lastGenRewardsRef.current = snapshot;
+      setLastGenRewards(snapshot);
+    }
     // 2. Build the new population (same body blueprint for everyone)
     const bodyBlueprint = selectedTemplate;
     const expectedIO = genomeIOForBlueprint(bodyBlueprint);
@@ -929,7 +994,14 @@ export default function App() {
           cfg.arena.terrainEnabled ||
           hasTerrain(obs)
         ) {
-          const furthestX = Math.max(
+          const packLeftX = Math.min(
+            ...currentPop.map(c => {
+              const hoop = c.privateWorld?.find(o => o.type === 'hoop');
+              return hoop ? hoop.x : c.currentX;
+            }),
+            100
+          );
+          const packRightX = Math.max(
             ...currentPop.map(c => {
               const hoop = c.privateWorld?.find(o => o.type === 'hoop');
               return hoop ? hoop.x : c.currentX;
@@ -938,7 +1010,7 @@ export default function App() {
           );
           extendEndlessTerrain(
             obs,
-            furthestX,
+            { leftX: packLeftX, rightX: packRightX },
             cfg.arena.terrainSeed ?? 42,
             cfg.arena.difficulty ?? 1,
             !!cfg.arena.terrainObstaclesEnabled
@@ -1064,6 +1136,11 @@ export default function App() {
 
   const handleUpdateConfig = (newConfig: Partial<SimulationConfig>) => {
     protectSeededPopulationRef.current = false;
+    if (newConfig.goal !== undefined) {
+      setRewardBaseline(null);
+      lastGenRewardsRef.current = null;
+      setLastGenRewards(null);
+    }
     setConfig(prev => {
       let nextGoal = newConfig.goal ?? prev.goal;
       if (newConfig.goal && !goalAllowedInZone(newConfig.goal, activeZone)) {
@@ -1084,10 +1161,11 @@ export default function App() {
       // Reset Para Ramp curriculum stage when entering the goal
       const enteringPara =
         nextGoal === EvolutionGoal.PARA_RAMP_GLIDE && prev.goal !== EvolutionGoal.PARA_RAMP_GLIDE;
-      // Respect slider (min 10s) for every goal/zone — no flight-only floor.
+      const goalChanged = newConfig.goal !== undefined && newConfig.goal !== prev.goal;
       const generationDuration = Math.max(
         10,
-        newConfig.generationDuration ?? prev.generationDuration
+        newConfig.generationDuration ??
+          (goalChanged ? recommendedGenerationDuration(nextGoal) : prev.generationDuration)
       );
       return {
         ...prev,
@@ -1112,33 +1190,89 @@ export default function App() {
       );
       return;
     }
-    setActiveChallengeId(challenge.id);
-    setConfig(prev => ({
-      ...prev,
+    const morphology = evaluateChallengeConstraints(selectedTemplate, challenge.constraints);
+    if (!morphology.ok) {
+      alert(
+        `Cannot start "${challenge.title}" with "${selectedTemplate.name}":\n\n${morphology.reasons.join('\n')}${
+          challenge.recommendedBody
+            ? `\n\nRecommended body: ${challenge.recommendedBody}.`
+            : ''
+        }`
+      );
+      return;
+    }
+    const eligibility = evaluateEligibility(selectedTemplate, {
+      zoneId: activeZone,
       goal: challenge.goal,
-      generationDuration: Math.max(prev.generationDuration, 28),
+      allowedEquipment: challenge.constraints?.allowedEquipment,
+    });
+    if (!eligibility.eligible) {
+      alert(eligibilityMessage(eligibility));
+      return;
+    }
+
+    const nextConfig: SimulationConfig = {
+      ...configRef.current,
+      goal: challenge.goal,
+      generationDuration:
+        challenge.episodeSeconds ?? Math.max(configRef.current.generationDuration, 28),
+      addNodeRate: challenge.lockTopology === false ? configRef.current.addNodeRate : 0,
+      addConnectionRate:
+        challenge.lockTopology === false
+          ? configRef.current.addConnectionRate
+          : Math.min(configRef.current.addConnectionRate, 0.05),
       arena: {
-        ...prev.arena,
-        difficulty: Math.max(prev.arena.difficulty ?? 1, 1.15),
+        ...configRef.current.arena,
+        difficulty: Math.max(
+          configRef.current.arena.difficulty ?? 1,
+          challenge.arena?.difficulty ?? 1.15
+        ),
         progressiveTier: 0,
-        gapWidthPx: prev.arena.gapWidthPx ?? BASE_GAP_WIDTH,
-        rampAngleDeg: prev.arena.rampAngleDeg ?? DEFAULT_RAMP_ANGLE_DEG,
-        rampWidthPx: prev.arena.rampWidthPx ?? BASE_RAMP_WIDTH,
+        gapWidthPx:
+          challenge.arena?.gapWidthPx ??
+          configRef.current.arena.gapWidthPx ??
+          BASE_GAP_WIDTH,
+        rampAngleDeg:
+          challenge.arena?.rampAngleDeg ??
+          configRef.current.arena.rampAngleDeg ??
+          DEFAULT_RAMP_ANGLE_DEG,
+        rampWidthPx:
+          challenge.arena?.rampWidthPx ??
+          configRef.current.arena.rampWidthPx ??
+          BASE_RAMP_WIDTH,
+        terrainEnabled:
+          challenge.arena?.terrainEnabled ?? configRef.current.arena.terrainEnabled,
+        terrainObstaclesEnabled:
+          challenge.arena?.terrainObstaclesEnabled ??
+          configRef.current.arena.terrainObstaclesEnabled,
+        iceEnabled: challenge.arena?.iceEnabled ?? configRef.current.arena.iceEnabled,
+        windEnabled: challenge.arena?.windEnabled ?? configRef.current.arena.windEnabled,
+        windStrength: challenge.arena?.windStrength ?? configRef.current.arena.windStrength,
+        pitEnabled: challenge.arena?.pitEnabled ?? configRef.current.arena.pitEnabled,
+        rampEnabled: challenge.arena?.rampEnabled ?? configRef.current.arena.rampEnabled,
         ...(challenge.goal === EvolutionGoal.MOTOR_LOOP
           ? { terrainEnabled: true, terrainSeed: (Math.random() * 1e9) | 0 }
           : {}),
+        ...challenge.arena,
       },
       ...(isParaRampGoal(challenge.goal)
         ? { paraPilotStage: 'runUp' as ParaPilotStage, paraStageBestHistory: [] }
         : {}),
-    }));
+    };
+    configRef.current = nextConfig;
+    setActiveChallengeId(challenge.id);
+    setConfig(nextConfig);
+    resetWorld(nextConfig.goal, nextConfig.arena);
     setBestEverDistance(0);
     setBestEverPeakSpeed(0);
     setBestEverPeakLandSpeed(0);
     setBestEverJumpHeight(0);
+    setRewardBaseline(null);
+    lastGenRewardsRef.current = null;
+    setLastGenRewards(null);
     setCurrentGen(1);
     applyPersistedBestEverBaseline(challenge.goal);
-    initializePopulation(selectedTemplate, config.populationSize, true);
+    initializePopulation(selectedTemplate, nextConfig.populationSize, true);
     setIsRunning(true);
   };
 
@@ -1186,6 +1320,9 @@ export default function App() {
     creaturesRef.current = newCreatures;
     setSelectedCreatureId(newCreatures[0].id);
     setGenerationHistory([]);
+    setRewardBaseline(null);
+    lastGenRewardsRef.current = null;
+    setLastGenRewards(null);
     setCurrentGen(1);
     setElapsedSeconds(0);
     elapsedSecondsRef.current = 0;
@@ -1218,6 +1355,9 @@ export default function App() {
   // Wipe statistics and start fresh
   const handleResetSimulation = () => {
     protectSeededPopulationRef.current = false;
+    setRewardBaseline(null);
+    lastGenRewardsRef.current = null;
+    setLastGenRewards(null);
     setSessionModelBestByKey(prev => {
       const modelKey = currentModelScoreKeyRef.current;
       if (!(modelKey in prev)) return prev;
@@ -1248,6 +1388,7 @@ export default function App() {
       trainedGoal: config.goal,
       generation: currentGen,
       generationDurationSec: config.generationDuration,
+      appearance: selectedAppearance,
     });
     setFinishedModels(loadFinishedModels());
     setTransferSourceName(null);
@@ -1820,6 +1961,9 @@ export default function App() {
         
         // Reset metrics starting from Gen 1; promote permanent Best Ever if beaten.
         setGenerationHistory([]);
+        setRewardBaseline(null);
+        lastGenRewardsRef.current = null;
+        setLastGenRewards(null);
         setCurrentGen(1);
         const importedBest = data.fitness || 0;
         const importedDur =
@@ -1857,6 +2001,37 @@ export default function App() {
   const activeLeader = creatures.reduce(
     (best, current) => (current.fitness > best.fitness ? current : best),
     creatures[0] || null
+  );
+  const rewardBreakdown = useMemo(
+    () => {
+      // Prefer the last completed generation's best; fall back to live leader
+      // so the panel is useful before the first breed.
+      if (lastGenRewards && lastGenRewards.goal === config.goal) {
+        return lastGenRewards;
+      }
+      return activeLeader
+        ? calculateRewardBreakdown(
+            activeLeader,
+            config.goal,
+            activeLeader.privateWorld ?? worldObjects,
+            config.customGoal,
+            obstacles,
+            config.paraPilotStage
+          )
+        : null;
+    },
+    [
+      lastGenRewards,
+      activeLeader,
+      config.goal,
+      config.customGoal,
+      config.paraPilotStage,
+      worldObjects,
+      obstacles,
+      activeLeader?.fitness,
+      activeLeader?.currentX,
+      activeLeader?.id,
+    ]
   );
   const telemetryCreature =
     creatures.find(c => c.id === selectedCreatureId) || activeLeader || null;
@@ -2050,6 +2225,7 @@ export default function App() {
           onUpdateConfig={handleUpdateConfig}
           creatures={creatures}
           selectedCreatureId={selectedCreatureId}
+          selectedBlueprint={selectedTemplate}
           currentGen={displayedGenerationCount}
           bestEverFitness={bestEverFitness}
           challengeProgress={challengeProgress}
@@ -2385,6 +2561,8 @@ export default function App() {
                 onManualBreed={handleManualBreed}
                 onResetSimulation={handleResetSimulation}
                 onSetSimulationSpeed={speed => handleUpdateConfig({ simulationSpeed: speed })}
+                rewardBreakdown={rewardBreakdown}
+                rewardBaseline={rewardBaseline}
               />
 
               {/* Live telemetry — retained cards at ~70% size */}
@@ -2521,6 +2699,12 @@ export default function App() {
         )}
 
       </main>
+
+      <SecretGoalRevealOverlay
+        discovery={secretRevealQueue[0] ?? null}
+        onDismiss={() => setSecretRevealQueue(q => q.slice(1))}
+        variant="sandbox"
+      />
 
       {/* Modern footer */}
       {!isFullscreen && activeTab === 'simulation' && (

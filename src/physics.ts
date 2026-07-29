@@ -24,6 +24,8 @@ import {
   pistonRates,
   DEFAULT_MOTOR_POWER,
   isIsolatedJumpGoal,
+  objectRelativeSensorValues,
+  OBJECT_SENSOR_COUNT,
 } from './types';
 import { evaluateGenome } from './neat';
 import {
@@ -73,6 +75,7 @@ import {
   flightLandCeiling,
   glideCorridorBand,
   FLIGHT_MIN_CLEARANCE_FLOOR,
+  HOOP_FINISH_OFFSET_BASE,
 } from './physicsConstants';
 import {
   buildGoalArena,
@@ -88,6 +91,7 @@ import {
   sampleTerrainHeight,
   extendEndlessTerrain,
   hoopFinishX,
+  ensureTerrainForFinishCourse,
   snapObstaclesToTerrain,
 } from './terrain';
 import { applyWingForces, applyParagliderForces, applyParachuteForces, sailOpenness, hasParaglider, hasWing, hasParachute } from './aero';
@@ -422,6 +426,7 @@ export function spawnCreature(
     stayTallSupportedFrames: 0,
     stayTallFallFrames: 0,
     peakSpeed: 0,
+    peakSupportedSpeed: 0,
     peakLandSpeed: 0,
     currentSpeed: 0,
     airbornePeakHeight: 0,
@@ -531,11 +536,16 @@ export function spawnCreature(
     flightTimeBoutWorkBase: 0,
     flightTimeBoutSymBase: 0,
     flightTimeBoutSymQualityBase: 0,
+    flightTimeBoutLevelFrames: 0,
+    flightTimeBoutStableHorizFrames: 0,
+    flightTimePrevHorizSpeed: 0,
+    flightGroundTouches: 0,
     flightTimeBestBoutScore: 0,
     flightAirspeedBoutPeak: 0,
     flightAirspeedBoutFrames: 0,
     flightAirspeedBoutDist: 0,
     flightAirspeedBoutPeakClearance: 0,
+    flightAirspeedBoutRotation: 0,
     flightAirspeedBestBoutScore: 0,
     aerialCrossingBestShaping: 0,
     paraAirBestBoutScore: 0,
@@ -571,6 +581,7 @@ export function spawnCreature(
     glideBoutOpenDist: 0,
     glideBoutTechniqueBonus: 0,
     glideBestBoutScore: 0,
+    glideHasLanded: false,
     flightHeightBoutFrames: 0,
     flightHeightBoutPeak: 0,
     flightHeightBoutIntegral: 0,
@@ -581,12 +592,15 @@ export function spawnCreature(
     flightHeightBoutSymBase: 0,
     flightHeightBoutSymQualityBase: 0,
     flightHeightBoutPrevFlap: 0,
+    flightHeightBoutVerticalTravel: 0,
+    flightHeightBoutLevelFrames: 0,
     flightHeightBestBoutScore: 0,
     attemptBoutFrames: 0,
     attemptBoutRight: 0,
     attemptBoutLeft: 0,
     attemptBoutPeakClearance: 0,
     attemptBoutRotation: 0,
+    attemptBoutVertDescent: 0,
     jumpRightBestBoutScore: 0,
     jumpLeftBestBoutScore: 0,
     flightRightBestBoutScore: 0,
@@ -596,6 +610,14 @@ export function spawnCreature(
     flightLandBestBoutScore: 0,
     privateWorld,
     gaitHistory: muscles.map(() => []),
+    episodeMinX: startX,
+    episodeMaxX: startX,
+    episodePeakSupportHeight: 0,
+    upsideDownFrames: 0,
+    postFinishFallFrames: 0,
+    episodeRapidBounceFrames: 0,
+    episodePrevComY: startY,
+    episodeStairPeak: 0,
   };
 }
 
@@ -1473,9 +1495,7 @@ function stepWorldObject(
   }
 
   for (const obs of obstacles) {
-    if (obs.type === 'ice' || obs.type === 'terrain' || obs.type === 'finish' || obs.type === 'checkpoint') {
-      continue;
-    }
+    if (!ballObstacleBlocksObject(obs, obj)) continue;
     const left = obs.x;
     const right = obs.x + obs.width;
     const top = obs.y;
@@ -1684,6 +1704,59 @@ function resolveCreatureObjectCollisions(
 
 const CARRY_BALL_MIN_LIFT = 4;
 const CARRY_BALL_MIN_TRANSPORT_STEP = 0.05;
+/** Scoring events require creature-ball contact within this many frames. */
+const BALL_CONTACT_WINDOW = 45;
+
+function ballObstacleBlocksObject(obs: Obstacle, obj: WorldObject): boolean {
+  if (
+    obs.type === 'ice' ||
+    obs.type === 'terrain' ||
+    obs.type === 'finish' ||
+    obs.type === 'checkpoint' ||
+    obs.type === 'target'
+  ) {
+    return false;
+  }
+  if (obj.type === 'ball' && (obs.label === 'GOAL' || obs.label === 'GOAL_POST')) {
+    return false;
+  }
+  return true;
+}
+
+function hasProvenBallContact(creature: Creature): boolean {
+  const last = creature.ballContactFrame;
+  if (last === undefined) return false;
+  return (creature.episodeFrames ?? 0) - last <= BALL_CONTACT_WINDOW;
+}
+
+function targetCenter(obs: Obstacle): { x: number; y: number; r: number } {
+  const r = obs.targetRadius ?? obs.width / 2;
+  return { x: obs.x + r, y: obs.y + r, r };
+}
+
+function parkingUprightThreshold(creature: Creature): number {
+  const bodyH = creature.restBodyHeight ?? 40;
+  return Math.max(18, bodyH * 0.28);
+}
+
+function parkingPostureOk(creature: Creature): boolean {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const node of creature.nodes) {
+    minX = Math.min(minX, node.x - node.radius);
+    maxX = Math.max(maxX, node.x + node.radius);
+    minY = Math.min(minY, node.y - node.radius);
+    maxY = Math.max(maxY, node.y + node.radius);
+  }
+  const width = maxX - minX || 1;
+  const height = maxY - minY || 1;
+  if (width / height >= 1.4) {
+    return true;
+  }
+  return uprightScore(creature) > parkingUprightThreshold(creature);
+}
 
 /**
  * Records reconstructable Carry Ball provenance from the collision solver.
@@ -1705,6 +1778,7 @@ function trackCarryBallContact(
 
   if (directContact) {
     creature.ballCreatureContacted = true;
+    creature.ballContactFrame = creature.episodeFrames ?? 0;
     creature.carryBallContactChainFrames =
       (creature.carryBallContactChainFrames ?? 0) + 1;
     creature.carryBallBestContactChainFrames = Math.max(
@@ -1826,8 +1900,8 @@ function metricValue(
       return jumpH + clearBonus;
     }
     case 'manual':
-      // Manual rules contribute a flat weighted bonus (user-defined "reward") each evaluation
-      return rule.bonus ?? rule.weight;
+      // Manual rules are selection bonuses only — no per-frame gradient.
+      return 0;
     default:
       return 0;
   }
@@ -1890,6 +1964,8 @@ function flightHeightBoutScore(
   flapWork: number,
   symFrames = 0,
   symQuality = 0,
+  verticalTravel = 0,
+  levelFrames = 0,
   minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
   const excessPeak = flightExcessClearance(peak, minClear);
@@ -1933,6 +2009,12 @@ function flightHeightBoutScore(
   const symBonus =
     Math.min(110, Math.max(0, symFrames)) * 0.55 +
     Math.min(160, Math.max(0, symQuality)) * 0.45;
+  const levelBonus = Math.min(90, Math.max(0, levelFrames)) * 0.5;
+  const vertScore =
+    Math.min(minClear * 2, Math.max(0, verticalTravel)) *
+    1.8 *
+    sustainGate *
+    aeroEvidence;
   const leapPenalty = leapiness * excessPeak * 0.55;
 
   return Math.max(
@@ -1942,7 +2024,9 @@ function flightHeightBoutScore(
       climbScore +
       climbShaping +
       flapBonus +
-      symBonus -
+      symBonus +
+      levelBonus +
+      vertScore -
       leapPenalty
   );
 }
@@ -1962,6 +2046,8 @@ function activeFlightHeightBoutFitness(creature: Creature): number {
     Math.max(0, (creature.wingFlapWork ?? 0) - workBase),
     Math.max(0, (creature.wingSymFlapFrames ?? 0) - symBase),
     Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase),
+    creature.flightHeightBoutVerticalTravel ?? 0,
+    creature.flightHeightBoutLevelFrames ?? 0,
     creatureFlightMinClearance(creature)
   );
 }
@@ -1984,6 +2070,8 @@ function resetFlightHeightBout(creature: Creature): void {
   creature.flightHeightBoutSymBase = 0;
   creature.flightHeightBoutSymQualityBase = 0;
   creature.flightHeightBoutPrevFlap = 0;
+  creature.flightHeightBoutVerticalTravel = 0;
+  creature.flightHeightBoutLevelFrames = 0;
 }
 
 /** Rightward airborne travel. */
@@ -2016,15 +2104,17 @@ function flightLeftFitness(creature: Creature): number {
   );
 }
 
-/** Peak speed while fully airborne — best single bout only. */
+/** Peak speed while fully airborne — best single bout only; full spin invalidates. */
 function flightAirspeedBoutScore(
   peak: number,
   frames: number,
   dist: number,
   clearance: number,
+  rotation = 0,
   minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
   if (frames < 8 || clearance < minClear) return 0;
+  if (rotation >= Math.PI * 2) return 0;
   return peak * 55 + Math.min(frames, 160) * 0.4 + dist * 0.12;
 }
 
@@ -2034,6 +2124,7 @@ function activeFlightAirspeedBoutFitness(creature: Creature): number {
     creature.flightAirspeedBoutFrames ?? 0,
     creature.flightAirspeedBoutDist ?? 0,
     creature.flightAirspeedBoutPeakClearance ?? 0,
+    creature.flightAirspeedBoutRotation ?? 0,
     creatureFlightMinClearance(creature)
   );
 }
@@ -2077,7 +2168,8 @@ function flightAcrobaticsFitness(creature: Creature): number {
       creature.attemptBoutFrames ?? 0,
       creature.attemptBoutPeakClearance ?? 0,
       true,
-      creatureFlightMinClearance(creature)
+      creatureFlightMinClearance(creature),
+      creature.attemptBoutVertDescent ?? 0
     )
   );
 }
@@ -2087,7 +2179,8 @@ function acrobaticsBoutScore(
   air: number,
   peak: number,
   flight: boolean,
-  minClear = flight ? FLIGHT_MIN_CLEARANCE_FLOOR : JUMP_MIN_CLEARANCE
+  minClear = flight ? FLIGHT_MIN_CLEARANCE_FLOOR : JUMP_MIN_CLEARANCE,
+  vertDescent = 0
 ): number {
   if (peak < minClear) return 0;
   const flips = Math.floor(rot / (Math.PI * 2));
@@ -2096,16 +2189,19 @@ function acrobaticsBoutScore(
   const rotationWeight = flight ? 28 : 26;
   const flipWeight = flight ? 90 : 85;
   const peakWeight = flight ? 0.4 : 0.35;
-  return (
+  const diveBonus =
+    flight && vertDescent > minClear * 0.35
+      ? Math.min(90, vertDescent * 0.65) * Math.min(1, rot / Math.PI)
+      : 0;
+  const rotationScore =
     (
       rot * rotationWeight +
       flips * flipWeight +
       Math.min(flightExcessClearance(peak, minClear), minClear * 1.5) * peakWeight
     ) *
-      airGate *
-      heightGate +
-    air * (flight ? 0.15 : 0.2)
-  );
+    airGate *
+    heightGate;
+  return rotationScore + diveBonus + (flight ? 0 : air * 0.2);
 }
 
 function directionalBoutScore(
@@ -2167,7 +2263,8 @@ function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
           frames,
           peak,
           true,
-          flightMin
+          flightMin,
+          creature.attemptBoutVertDescent ?? 0
         )
       );
     }
@@ -2177,6 +2274,7 @@ function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
   creature.attemptBoutLeft = 0;
   creature.attemptBoutPeakClearance = 0;
   creature.attemptBoutRotation = 0;
+  creature.attemptBoutVertDescent = 0;
 }
 
 /** Hang Time: best isolated jump bout; hop chains never score. */
@@ -2872,16 +2970,20 @@ function solidMembershipFromBodies(
  * wheeled chassis plates (e.g. Glydor) measure a large negative depth from
  * elevated body nodes and yank the whole plate into the floor.
  *
- * Always lift when members penetrate GROUND_Y. Downward reseating of a solid
- * that merely contacted this frame is only safe on true flat courses
- * (`enabled`); structured supports own contact and must not be yanked to
- * floor height.
+ * Lift when members penetrate the nominal GROUND_Y plane. Downward reseating of
+ * a solid that merely contacted this frame is only safe on true flat courses
+ * (`enabled`); structured supports own contact and must not be yanked to floor
+ * height. Procedural terrain owns support via per-node heightfield contact —
+ * uniform GROUND_Y correction would pull bodies out of valleys onto the flat
+ * reference plane.
  */
 function resolveSolidFlatGround(
   creature: Creature,
   solidsThatHitGround: ReadonlySet<string>,
-  enabled: boolean
+  enabled: boolean,
+  terrainActive: boolean
 ): void {
+  if (terrainActive) return;
   const solids = creature.solidBodies;
   if (!solids || solids.length === 0) return;
   for (const body of solids) {
@@ -3124,12 +3226,21 @@ function motorRampFitness(creature: Creature): number {
 }
 
 function speedFitness(creature: Creature): number {
-  const peak = creature.peakSpeed ?? 0;
+  const peak = creature.peakSupportedSpeed ?? creature.peakSpeed ?? 0;
   const distance = Math.max(0, creature.currentX - creature.startX);
-  // Require real travel (~half body length) so thrashing-in-place cannot win on spike speed.
   const minTravel = Math.max(40, (creature.restBodyWidth ?? 0) * 0.5);
   if (distance < minTravel) return distance * 0.15;
   return peak * 45 + distance * 0.35;
+}
+
+function motorDriveFitness(creature: Creature): number {
+  return Math.max(0, creature.currentX - creature.startX);
+}
+
+function motorIceFitness(creature: Creature): number {
+  const iceDist = creature.iceSupportedDistance ?? 0;
+  const forward = Math.max(0, creature.currentX - creature.startX);
+  return iceDist * 1.25 + forward * 0.12;
 }
 
 function gapFitness(creature: Creature): number {
@@ -3156,23 +3267,42 @@ function launchLandFitness(creature: Creature): number {
   return Math.max(0, land * 1.75 + gap + progress + pitPenalty);
 }
 
-function hoopFitness(creature: Creature, objects: WorldObject[]): number {
+function hoopFitness(
+  creature: Creature,
+  objects: WorldObject[],
+  obstacles: Obstacle[] = []
+): number {
   const hoop = objects.find(o => o.type === 'hoop');
   const rawTravel = hoop
     ? Math.max(0, hoop.x - hoop.startX)
     : Math.max(0, creature.currentX - creature.startX);
   creature.hoopTravel = Math.max(creature.hoopTravel ?? 0, rawTravel);
 
-  // Rolling on terrain dominates — lofted / ballistic hoop flight barely counts.
   const grounded = creature.hoopGroundedTravel ?? 0;
   const lofted = Math.max(0, rawTravel - grounded);
-  const finish = creature.crossedFinish ? 180 : 0;
+  const finishObs = obstacles.find(o => o.type === 'finish');
+  const finishSpan = finishObs
+    ? Math.max(1, finishObs.x - AGENT_SPAWN_X)
+    : HOOP_FINISH_OFFSET_BASE;
+  const approach = Math.min(1, rawTravel / finishSpan);
+
   const outsidePenalty = Math.min(80, (creature.hoopOutsideFrames ?? 0) * 0.15);
   const loftFrames = creature.hoopLoftFrames ?? 0;
   const peakLoft = creature.hoopPeakLoft ?? 0;
   const loftPenalty = loftFrames * 0.55 + Math.min(400, peakLoft) * 1.1;
 
-  return Math.max(0, grounded + lofted * 0.04 + finish - outsidePenalty - loftPenalty);
+  if (creature.crossedFinish) {
+    const frames = creature.finishFrame ?? creature.episodeFrames ?? 9999;
+    return Math.max(
+      0,
+      1800 + Math.max(0, 350 - frames / 5) + grounded * 0.08 - outsidePenalty - loftPenalty
+    );
+  }
+
+  return Math.max(
+    0,
+    approach * 180 + grounded * 0.35 + lofted * 0.04 - outsidePenalty - loftPenalty
+  );
 }
 
 function hurdlesFitness(creature: Creature): number {
@@ -3196,6 +3326,8 @@ function timeTrialFitness(creature: Creature, finishX = FINISH_LINE_X): number {
 function landSpeedFitness(creature: Creature): number {
   const peak = creature.peakLandSpeed ?? 0;
   const distance = Math.max(0, creature.currentX - creature.startX);
+  const minTravel = Math.max(40, (creature.restBodyWidth ?? 0) * 0.5);
+  if (distance < minTravel) return distance * 0.15;
   return peak * 55 + Math.min(distance, 800) * 0.2;
 }
 
@@ -3218,21 +3350,22 @@ function parkingFitness(creature: Creature, obstacles: Obstacle[] = []): number 
 function kickGoalFitness(creature: Creature, objects: WorldObject[]): number {
   const ball = objects.find(o => o.type === 'ball');
   const ballTravel =
-    ball && creature.ballCreatureContacted
+    ball && hasProvenBallContact(creature)
       ? Math.max(0, ball.x - ball.startX)
       : 0;
   const goal = creature.goalScored ? 300 : 0;
   return goal + Math.min(100, ballTravel * 0.2);
 }
 
-function hitTargetFitness(creature: Creature, objects: WorldObject[]): number {
+function hitTargetFitness(creature: Creature, objects: WorldObject[], obstacles: Obstacle[]): number {
   const hits = creature.targetHits ?? 0;
   const ball = objects.find(o => o.type === 'ball');
+  const approach = creature.targetApproachBest ?? 0;
   const loft =
-    ball && hits > 0 && creature.ballCreatureContacted
+    ball && hits > 0 && hasProvenBallContact(creature)
       ? Math.max(0, ball.startY - ball.y)
       : 0;
-  return hits * 120 + Math.min(40, loft * 0.4);
+  return hits * 120 + approach + Math.min(40, loft * 0.4);
 }
 
 function bowlingFitness(creature: Creature): number {
@@ -3327,6 +3460,8 @@ function flightTimeBoutScore(
   flapWork: number,
   symFrames = 0,
   symQuality = 0,
+  levelFrames = 0,
+  stableHorizFrames = 0,
   minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
   const excessPeak = flightExcessClearance(peak, minClear);
@@ -3348,7 +3483,12 @@ function flightTimeBoutScore(
   const symBonus =
     Math.min(120, Math.max(0, symFrames)) * 0.65 +
     Math.min(180, Math.max(0, symQuality)) * 0.5;
-  return Math.max(0, sustain + cruise + flapBonus + symBonus - leapPenalty);
+  const levelBonus = Math.min(100, Math.max(0, levelFrames)) * 0.55;
+  const horizStability = Math.min(120, Math.max(0, stableHorizFrames)) * 0.45;
+  return Math.max(
+    0,
+    sustain + cruise + flapBonus + symBonus + levelBonus + horizStability - leapPenalty
+  );
 }
 
 function activeFlightTimeBoutFitness(creature: Creature): number {
@@ -3364,14 +3504,20 @@ function activeFlightTimeBoutFitness(creature: Creature): number {
     Math.max(0, (creature.wingFlapWork ?? 0) - workBase),
     Math.max(0, (creature.wingSymFlapFrames ?? 0) - symBase),
     Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase),
+    creature.flightTimeBoutLevelFrames ?? 0,
+    creature.flightTimeBoutStableHorizFrames ?? 0,
     creatureFlightMinClearance(creature)
   );
 }
 
 function flightTimeFitness(creature: Creature): number {
+  const touchPenalty = (creature.flightGroundTouches ?? 0) * 18;
   return Math.max(
-    creature.flightTimeBestBoutScore ?? 0,
-    activeFlightTimeBoutFitness(creature)
+    0,
+    Math.max(
+      creature.flightTimeBestBoutScore ?? 0,
+      activeFlightTimeBoutFitness(creature)
+    ) - touchPenalty
   );
 }
 
@@ -3383,6 +3529,9 @@ function resetFlightTimeBout(creature: Creature): void {
   creature.flightTimeBoutWorkBase = 0;
   creature.flightTimeBoutSymBase = 0;
   creature.flightTimeBoutSymQualityBase = 0;
+  creature.flightTimeBoutLevelFrames = 0;
+  creature.flightTimeBoutStableHorizFrames = 0;
+  creature.flightTimePrevHorizSpeed = 0;
 }
 
 function resetFlightAirspeedBout(creature: Creature): void {
@@ -3390,6 +3539,7 @@ function resetFlightAirspeedBout(creature: Creature): void {
   creature.flightAirspeedBoutFrames = 0;
   creature.flightAirspeedBoutDist = 0;
   creature.flightAirspeedBoutPeakClearance = 0;
+  creature.flightAirspeedBoutRotation = 0;
 }
 
 /** Distance while flying — Proven Glider / paraglider. */
@@ -3442,6 +3592,9 @@ function activeGlideBoutFitness(creature: Creature): number {
 
 /** Glide Range keeps the best single uninterrupted fully-airborne bout. */
 function glideRangeFitness(creature: Creature): number {
+  if (creature.glideHasLanded && (creature.glideBoutFrames ?? 0) === 0) {
+    return creature.glideBestBoutScore ?? 0;
+  }
   return Math.max(
     creature.glideBestBoutScore ?? 0,
     activeGlideBoutFitness(creature)
@@ -3585,8 +3738,9 @@ export function calculateFitness(
         obstacles
       );
     case EvolutionGoal.MOTOR_DRIVE:
+      return motorDriveFitness(creature);
     case EvolutionGoal.MOTOR_ICE:
-      return Math.max(0, creature.currentX - creature.startX);
+      return motorIceFitness(creature);
     case EvolutionGoal.MOTOR_RAMP:
       return motorRampFitness(creature);
     case EvolutionGoal.MOTOR_GAP:
@@ -3594,7 +3748,7 @@ export function calculateFitness(
     case EvolutionGoal.MOTOR_LAUNCH_LAND:
       return launchLandFitness(creature);
     case EvolutionGoal.MOTOR_LOOP:
-      return hoopFitness(creature, objects);
+      return hoopFitness(creature, objects, obstacles);
     case EvolutionGoal.MOTOR_HURDLES:
       return hurdlesFitness(creature);
     case EvolutionGoal.MOTOR_LANDSPEED:
@@ -3614,7 +3768,7 @@ export function calculateFitness(
     case EvolutionGoal.KICK_GOAL:
       return kickGoalFitness(creature, objects);
     case EvolutionGoal.HIT_TARGET:
-      return hitTargetFitness(creature, objects);
+      return hitTargetFitness(creature, objects, obstacles);
     case EvolutionGoal.BOWLING_PINS:
       return bowlingFitness(creature);
     case EvolutionGoal.DODGEBALL:
@@ -3656,7 +3810,9 @@ export function updateCreaturePhysics(
   config: SimulationConfig,
   objects: WorldObject[] = [],
   /** Optional scripted actuators (−1…1): flexible muscles first, then motor wheels. */
-  actuatorOverride?: number[]
+  actuatorOverride?: number[],
+  /** Test-only: zero the trailing object-relative pack before the brain reads it. */
+  opts?: { ablateObjectSensors?: boolean }
 ) {
   if (!creature.isAlive) return;
 
@@ -3683,6 +3839,10 @@ export function updateCreaturePhysics(
   const vertSpeed = centerY - prevY; // +Y is down
   creature.currentSpeed = horizSpeed;
   creature.peakSpeed = Math.max(creature.peakSpeed ?? 0, horizSpeed);
+  const groundedNow = creature.nodes.some(n => n.isGround);
+  if (groundedNow) {
+    creature.peakSupportedSpeed = Math.max(creature.peakSupportedSpeed ?? 0, horizSpeed);
+  }
   if (!wasAirborne) {
     creature.peakLandSpeed = Math.max(creature.peakLandSpeed ?? 0, horizSpeed);
   }
@@ -3725,6 +3885,14 @@ export function updateCreaturePhysics(
     inputs.push(
       ramp && centerX >= ramp.x - 20 && centerX <= ramp.x + ramp.width + 40 ? 1 : 0
     );
+  }
+
+  // C1 / D145: range-limited bearing + proximity to private goal object
+  inputs.push(...objectRelativeSensorValues(centerX, centerY, objects));
+  if (opts?.ablateObjectSensors) {
+    for (let i = inputs.length - OBJECT_SENSOR_COUNT; i < inputs.length; i += 1) {
+      inputs[i] = 0;
+    }
   }
 
   const flyingNow = isFullyAirborne(creature);
@@ -4033,7 +4201,7 @@ export function updateCreaturePhysics(
     // Contact already wrote friction/bounce into oldX/oldY; reshape without
     // re-deriving ω from those residuals (avoids launch amplification).
     projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: false });
-    resolveSolidFlatGround(creature, solidsThatHitGround, flatFloorSupport);
+    resolveSolidFlatGround(creature, solidsThatHitGround, flatFloorSupport, terrainActive);
   }
   if (hingeStopsActive) {
     projectHingeStops(creature.nodes, creature.muscles);
@@ -4109,7 +4277,7 @@ export function updateCreaturePhysics(
       }
     }
     projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: false });
-    resolveSolidFlatGround(creature, solidsThatHitGround, flatFloorSupport);
+    resolveSolidFlatGround(creature, solidsThatHitGround, flatFloorSupport, terrainActive);
   }
   if (hingeStopsActive) {
     projectHingeStops(creature.nodes, creature.muscles);
@@ -4130,6 +4298,40 @@ export function updateCreaturePhysics(
   const eventCenterY =
     creature.nodes.reduce((sum, node) => sum + node.y, 0) / creature.nodes.length;
   const hasSupportedContact = creature.nodes.some(node => node.isGround);
+
+  // Secret-goal episode telemetry (not shown in reward UI)
+  creature.episodeMinX = Math.min(creature.episodeMinX ?? creature.startX, eventCenterX);
+  creature.episodeMaxX = Math.max(creature.episodeMaxX ?? creature.startX, eventCenterX);
+  if (hasSupportedContact && !creature.fellInPit) {
+    const supportH = Math.max(
+      creature.stairPeakHeight ?? 0,
+      creature.rampPeakHeight ?? 0,
+      creature.obstacleClimbSupportedHeight ?? 0
+    );
+    creature.episodePeakSupportHeight = Math.max(
+      creature.episodePeakSupportHeight ?? 0,
+      supportH
+    );
+  }
+  if ((creature.stairPeakHeight ?? 0) > (creature.episodeStairPeak ?? 0)) {
+    creature.episodeStairPeak = creature.stairPeakHeight;
+  }
+  const prevComY = creature.episodePrevComY ?? eventCenterY;
+  if (Math.abs(eventCenterY - prevComY) > 3.5) {
+    creature.episodeRapidBounceFrames = (creature.episodeRapidBounceFrames ?? 0) + 1;
+  }
+  creature.episodePrevComY = eventCenterY;
+  if (normalizedUprightPosture(creature) < 0.25) {
+    creature.upsideDownFrames = (creature.upsideDownFrames ?? 0) + 1;
+  }
+  if (
+    creature.crossedFinish &&
+    creature.finishFrame !== undefined &&
+    (creature.episodeFrames ?? 0) - creature.finishFrame <= 30 &&
+    normalizedUprightPosture(creature) < 0.35
+  ) {
+    creature.postFinishFallFrames = (creature.postFinishFallFrames ?? 0) + 1;
+  }
 
   if (config.goal === EvolutionGoal.DODGEBALL) {
     const orderedHazards = obstacles
@@ -4157,6 +4359,28 @@ export function updateCreaturePhysics(
       creature.hazardUprightProgress =
         (creature.hazardUprightProgress ?? 0) +
         progress * normalizedUprightPosture(creature);
+    }
+  }
+
+  if (config.goal === EvolutionGoal.MOTOR_ICE && hasSupportedContact) {
+    const onIce = creature.nodes.some(
+      node =>
+        node.isGround &&
+        obstacles.some(
+          obs =>
+            obs.type === 'ice' &&
+            node.x >= obs.x &&
+            node.x <= obs.x + obs.width &&
+            node.y >= GROUND_Y - node.radius - 4
+        )
+    );
+    if (onIce) {
+      const priorIceX = creature.iceSupportedX ?? creature.startX;
+      if (eventCenterX > priorIceX) {
+        creature.iceSupportedDistance =
+          (creature.iceSupportedDistance ?? 0) + (eventCenterX - priorIceX);
+        creature.iceSupportedX = eventCenterX;
+      }
     }
   }
 
@@ -4320,6 +4544,13 @@ export function updateCreaturePhysics(
       (creature.checkpointReached ?? -1) + 1 ===
         obstacles.filter(obstacle => obstacle.checkpointIndex !== undefined).length
     );
+  const sprintFinishEligible =
+    config.goal !== EvolutionGoal.SPRINT_FINISH ||
+    (
+      hasSupportedContact &&
+      (creature.checkpointReached ?? -1) + 1 ===
+        obstacles.filter(obstacle => obstacle.checkpointIndex !== undefined).length
+    );
   const checkpointAtFrameStart = creature.checkpointReached ?? -1;
   if (
     config.goal === EvolutionGoal.ROUGH_TERRAIN_TRAVERSE &&
@@ -4348,7 +4579,7 @@ export function updateCreaturePhysics(
         if (finishProbeX >= obs.x && finishProbeX <= obs.x + zoneW && eventCenterY <= obs.y + obs.height) {
           if (obs.label === 'PARK') {
             const slow = (creature.currentSpeed ?? 0) < 0.55;
-            const tall = uprightScore(creature) > 35;
+            const tall = parkingPostureOk(creature);
             const fullBodyInBay = creature.nodes.every(node =>
               node.x - node.radius >= obs.x && node.x + node.radius <= obs.x + zoneW
             );
@@ -4361,7 +4592,8 @@ export function updateCreaturePhysics(
             !creature.crossedFinish &&
             hazardFinishEligible &&
             technicalFinishEligible &&
-            roughFinishEligible
+            roughFinishEligible &&
+            sprintFinishEligible
           ) {
             creature.crossedFinish = true;
             creature.finishFrame = creature.episodeFrames;
@@ -4372,7 +4604,8 @@ export function updateCreaturePhysics(
         finishProbeX >= obs.x &&
         hazardFinishEligible &&
         technicalFinishEligible &&
-        roughFinishEligible
+        roughFinishEligible &&
+        sprintFinishEligible
       ) {
         creature.crossedFinish = true;
         creature.finishFrame = creature.episodeFrames;
@@ -4412,13 +4645,17 @@ export function updateCreaturePhysics(
     }
   }
 
-  // Hurdles: the whole physical node hull clears each hurdle in order.
+  // Hurdles: whole hull clears each hurdle in order (airborne vault or supported drive-over).
   for (const obs of obstacles) {
     if (obs.hurdleIndex === undefined) continue;
     const bit = 1 << obs.hurdleIndex;
     if ((creature.hurdlesHitMask ?? 0) & bit) continue;
     const wholeHullAbove = creature.nodes.every(node => node.y + node.radius < obs.y - 1);
-    if (eventCenterX >= obs.x && wholeHullAbove && !hasSupportedContact) {
+    const supportedDriveOver =
+      hasSupportedContact &&
+      eventCenterX >= obs.x + obs.width * 0.45 &&
+      creature.nodes.every(node => node.y + node.radius <= obs.y + Math.max(8, scaleD(10)));
+    if (eventCenterX >= obs.x && ((wholeHullAbove && !hasSupportedContact) || supportedDriveOver)) {
       creature.hurdlesHitMask = (creature.hurdlesHitMask ?? 0) | bit;
       creature.hurdlesCleared = (creature.hurdlesCleared ?? 0) + 1;
     }
@@ -4431,10 +4668,10 @@ export function updateCreaturePhysics(
     let mask = creature.targetHitMask ?? 0;
     for (let i = 0; i < targets.length; i++) {
       const obs = targets[i];
-      const tr = obs.targetRadius ?? obs.width / 2;
+      const { x: cx, y: cy, r: tr } = targetCenter(obs);
       if (
-        creature.ballCreatureContacted &&
-        Math.hypot(ball.x - obs.x, ball.y - obs.y) < tr + ball.radius
+        hasProvenBallContact(creature) &&
+        Math.hypot(ball.x - cx, ball.y - cy) < tr + ball.radius
       ) {
         mask |= 1 << i;
       }
@@ -4444,9 +4681,21 @@ export function updateCreaturePhysics(
     for (let m = mask; m; m >>= 1) hits += m & 1;
     creature.targetHits = hits;
 
+    if (config.goal === EvolutionGoal.HIT_TARGET) {
+      let bestApproach = creature.targetApproachBest ?? 0;
+      for (let i = 0; i < targets.length; i++) {
+        if ((mask >> i) & 1) continue;
+        const { x: cx, y: cy, r: tr } = targetCenter(targets[i]);
+        const dist = Math.max(0, Math.hypot(ball.x - cx, ball.y - cy) - tr - ball.radius);
+        const approach = Math.max(0, 220 - dist);
+        bestApproach = Math.max(bestApproach, approach * 0.15);
+      }
+      creature.targetApproachBest = bestApproach;
+    }
+
     const net = obstacles.find(o => o.type === 'finish' && o.label === 'NET');
     if (
-      creature.ballCreatureContacted &&
+      hasProvenBallContact(creature) &&
       net &&
       net.zoneWidth &&
       !creature.goalScored
@@ -4662,6 +4911,7 @@ export function updateCreaturePhysics(
         creature.attemptBoutLeft = 0;
         creature.attemptBoutPeakClearance = clear0;
         creature.attemptBoutRotation = 0;
+        creature.attemptBoutVertDescent = 0;
       }
     } else if ((creature.jumpHangBoutFrames ?? 0) > 0) {
       creature.jumpHangBoutFrames = (creature.jumpHangBoutFrames ?? 0) + 1;
@@ -4781,6 +5031,9 @@ export function updateCreaturePhysics(
         creature.flightTimeBoutWorkBase = creature.wingFlapWork ?? 0;
         creature.flightTimeBoutSymBase = creature.wingSymFlapFrames ?? 0;
         creature.flightTimeBoutSymQualityBase = creature.wingSymFlapQuality ?? 0;
+        creature.flightTimeBoutLevelFrames = 0;
+        creature.flightTimeBoutStableHorizFrames = 0;
+        creature.flightTimePrevHorizSpeed = horizSpeed;
       } else {
         creature.flightTimeBoutFrames =
           (creature.flightTimeBoutFrames ?? 0) + 1;
@@ -4790,6 +5043,25 @@ export function updateCreaturePhysics(
         );
         creature.flightTimeBoutIntegral =
           (creature.flightTimeBoutIntegral ?? 0) + clear;
+        const prevHoriz = creature.flightTimePrevHorizSpeed ?? horizSpeed;
+        if (
+          Math.abs(horizSpeed - prevHoriz) < 1.8 &&
+          horizSpeed > 0.8 &&
+          Math.abs(creature.bodyOmega ?? 0) < 0.1
+        ) {
+          creature.flightTimeBoutStableHorizFrames =
+            (creature.flightTimeBoutStableHorizFrames ?? 0) + 1;
+        }
+        creature.flightTimePrevHorizSpeed = horizSpeed;
+        if (hasWing(creature)) {
+          const ang = creature.bodyAngle ?? 0;
+          const level =
+            Math.abs(ang) < 0.35 || Math.abs(Math.abs(ang) - Math.PI) < 0.35;
+          if (level && flapSeen > (creature.flightTimeBoutFlapBase ?? 0)) {
+            creature.flightTimeBoutLevelFrames =
+              (creature.flightTimeBoutLevelFrames ?? 0) + 1;
+          }
+        }
       }
     }
 
@@ -4806,6 +5078,8 @@ export function updateCreaturePhysics(
         creature.flightHeightBoutSymBase = creature.wingSymFlapFrames ?? 0;
         creature.flightHeightBoutSymQualityBase = creature.wingSymFlapQuality ?? 0;
         creature.flightHeightBoutPrevFlap = flapSeen;
+        creature.flightHeightBoutVerticalTravel = 0;
+        creature.flightHeightBoutLevelFrames = 0;
       } else {
         creature.flightHeightBoutFrames =
           (creature.flightHeightBoutFrames ?? 0) + 1;
@@ -4815,6 +5089,19 @@ export function updateCreaturePhysics(
         );
         creature.flightHeightBoutIntegral =
           (creature.flightHeightBoutIntegral ?? 0) + clear;
+        if (vertSpeed < -0.12) {
+          creature.flightHeightBoutVerticalTravel =
+            (creature.flightHeightBoutVerticalTravel ?? 0) + Math.max(0, prevY - centerY);
+        }
+        if (hasWing(creature)) {
+          const ang = creature.bodyAngle ?? 0;
+          const level =
+            Math.abs(ang) < 0.35 || Math.abs(Math.abs(ang) - Math.PI) < 0.35;
+          if (level && flapSeen > (creature.flightHeightBoutFlapBase ?? 0)) {
+            creature.flightHeightBoutLevelFrames =
+              (creature.flightHeightBoutLevelFrames ?? 0) + 1;
+          }
+        }
         const flappingNow = flapSeen > (creature.flightHeightBoutPrevFlap ?? 0);
         creature.flightHeightBoutPrevFlap = flapSeen;
         // Powered climb: COM rose this frame while a wing stroke was active.
@@ -4839,12 +5126,30 @@ export function updateCreaturePhysics(
         creature.flightAirspeedBoutPeakClearance ?? 0,
         clear
       );
+      if (creature.bodyAngle !== undefined) {
+        let dAng = angle - creature.bodyAngle;
+        while (dAng > Math.PI) dAng -= Math.PI * 2;
+        while (dAng < -Math.PI) dAng += Math.PI * 2;
+        creature.flightAirspeedBoutRotation =
+          (creature.flightAirspeedBoutRotation ?? 0) + Math.abs(dAng);
+      }
+    }
+
+    if (
+      config.goal === EvolutionGoal.FLIGHT_ACROBATICS &&
+      vertSpeed > 0.35
+    ) {
+      creature.attemptBoutVertDescent =
+        (creature.attemptBoutVertDescent ?? 0) + Math.max(0, centerY - prevY);
     }
 
     const open = hasParaglider(creature) ? sailOpenness(creature) : 1;
     const trackGlideBout =
-      config.goal === EvolutionGoal.GLIDE_RANGE ||
-      config.goal === EvolutionGoal.PARA_RAMP_GLIDE;
+      (config.goal === EvolutionGoal.GLIDE_RANGE ||
+        config.goal === EvolutionGoal.PARA_RAMP_GLIDE) &&
+      !(
+        config.goal === EvolutionGoal.GLIDE_RANGE && creature.glideHasLanded
+      );
     if (trackGlideBout) {
       creature.glideBoutFrames = (creature.glideBoutFrames ?? 0) + 1;
       creature.glideBoutDistance = (creature.glideBoutDistance ?? 0) + dxRight;
@@ -4886,6 +5191,19 @@ export function updateCreaturePhysics(
     }
   } else {
     // Any body part on the ground ends the airborne reward period.
+    if (
+      config.goal === EvolutionGoal.FLIGHT_TIME &&
+      (creature.flightTimeBoutFrames ?? 0) > 0
+    ) {
+      creature.flightGroundTouches = (creature.flightGroundTouches ?? 0) + 1;
+    }
+    if (
+      config.goal === EvolutionGoal.GLIDE_RANGE &&
+      ((creature.glideBoutFrames ?? 0) > 0 ||
+        (creature.glideBestBoutScore ?? 0) > 0)
+    ) {
+      creature.glideHasLanded = true;
+    }
     if (
       (creature.attemptBoutFrames ?? 0) > 0 &&
       !isIsolatedJumpGoal(config.goal) &&
@@ -5280,7 +5598,7 @@ export function generateObstacles(
     const includeObstacles = !!arena?.terrainObstaclesEnabled;
     obstacles.push(...buildHoopTerrain(seed, difficulty, includeObstacles));
     if (goal === EvolutionGoal.MOTOR_LOOP) {
-      obstacles.push(makeFinish(hoopFinishX(difficulty)));
+      obstacles.push(makeFinish(hoopFinishX(difficulty, arena?.progressiveTier ?? 0)));
     }
   }
 
@@ -5292,6 +5610,12 @@ export function generateObstacles(
   applyArenaModifiers(obstacles, goal, arena);
 
   if (useTerrain) {
+    ensureTerrainForFinishCourse(
+      obstacles,
+      seed,
+      difficulty,
+      !!arena?.terrainObstaclesEnabled
+    );
     snapObstaclesToTerrain(obstacles);
   }
 

@@ -36,9 +36,19 @@ import {
   importElitePayloadAsProduct,
   loadFinishedModels,
   MAX_COMPETITORS,
+  resolveModelAppearance,
   traitLabel,
 } from '../../src/savedModels';
 import { Visualizer } from '../../src/components/Visualizer';
+import { SecretGoalRevealOverlay } from '../../src/components/SecretGoalRevealOverlay';
+import {
+  SecretTrophiesPanel,
+  secretTrophiesTabLabel,
+} from '../../src/components/SecretTrophiesPanel';
+import { evaluateSecretGoals } from '../../src/secretGoalEval';
+import { recordDiscovery, SecretGoalDiscovery } from '../../src/secretGoalProgress';
+import { SecretGoalId } from '../../src/secretGoals';
+import { AppearanceRig } from '../../src/creaturePackages';
 import { getGoalInfo } from '../../src/goalCatalog';
 import {
   buildEventArena,
@@ -69,6 +79,7 @@ import {
 } from 'lucide-react';
 
 type Phase = 'lobby' | 'racing' | 'podium';
+type SideTab = 'events' | 'roster' | 'leaderboard' | 'secrets';
 
 const SANDBOX_HREF = '../';
 
@@ -113,6 +124,12 @@ export function ArenaApp() {
   const [speed, setSpeed] = useState(1);
   const [freestyleGoal, setFreestyleGoal] = useState(EvolutionGoal.LOCOMOTION_RIGHT);
   const [newRecordFlash, setNewRecordFlash] = useState(false);
+  const [appearanceByCreatureId, setAppearanceByCreatureId] = useState<
+    Record<string, AppearanceRig>
+  >({});
+  const [sideTab, setSideTab] = useState<SideTab>('events');
+  const [secretRevealQueue, setSecretRevealQueue] = useState<SecretGoalDiscovery[]>([]);
+  const [secretRefreshKey, setSecretRefreshKey] = useState(0);
 
   const event = eventById(eventId) ?? CHAMPIONSHIP_EVENTS[0];
   const config = useMemo(
@@ -156,6 +173,7 @@ export function ArenaApp() {
       const difficulty = arena.difficulty ?? 1;
       const usePara = isParaRampGoal(goal);
       const next: Creature[] = [];
+      const nextAppearances: Record<string, AppearanceRig> = {};
 
       for (const model of roster) {
         let genome = structuredClone(model.genome);
@@ -172,10 +190,19 @@ export function ArenaApp() {
                 ? structuredClone(model.paraPilot)
                 : undefined;
 
+        const creatureId = `heat_${model.id}_${Math.random().toString(36).slice(2, 6)}`;
+        const modelAppearance = resolveModelAppearance(model.blueprint, {
+          name: model.name,
+          stored: model.appearance,
+        });
+        if (modelAppearance) {
+          nextAppearances[creatureId] = modelAppearance;
+        }
+
         next.push(
           spawnCreature(
             {
-              id: `heat_${model.id}_${Math.random().toString(36).slice(2, 6)}`,
+              id: creatureId,
               generation: model.generation,
               blueprint: structuredClone(model.blueprint),
               genome,
@@ -199,6 +226,7 @@ export function ArenaApp() {
       worldObjectsRef.current = objs;
       setCreatures(next);
       creaturesRef.current = next;
+      setAppearanceByCreatureId(nextAppearances);
       setSelectedCreatureId(next[0]?.id ?? null);
       elapsedRef.current = 0;
       simTimeRef.current = 0;
@@ -221,8 +249,37 @@ export function ArenaApp() {
     phaseRef.current = 'podium';
 
     const champ = standings[0];
+    const champCreature = sorted[0];
     if (champ) {
       setAnnouncer(`Heat complete — ${champ.name} takes the crown with ${champ.score.toFixed(1)}!`);
+    }
+
+    if (champCreature) {
+      const cfg = configRef.current;
+      const minFit = sorted[sorted.length - 1]?.fitness ?? 0;
+      const newIds = evaluateSecretGoals({
+        creature: champCreature,
+        activeGoal: cfg.goal,
+        arena: cfg.arena,
+        modelName: champCreature.displayName || champCreature.blueprint.name,
+        context: 'arena',
+        isLowestFitnessInHeat: champCreature.fitness <= minFit,
+      });
+      const fresh: SecretGoalDiscovery[] = [];
+      for (const id of newIds) {
+        const entry: SecretGoalDiscovery = {
+          secretGoalId: id as SecretGoalId,
+          discoveredAt: new Date().toISOString(),
+          modelName: champCreature.displayName || champCreature.blueprint.name,
+          activeGoal: cfg.goal,
+          context: 'arena',
+        };
+        if (recordDiscovery(entry)) fresh.push(entry);
+      }
+      if (fresh.length > 0) {
+        setSecretRevealQueue(q => [...q, ...fresh]);
+        setSecretRefreshKey(k => k + 1);
+      }
     }
 
     const evt = eventById(eventId) ?? CHAMPIONSHIP_EVENTS[0];
@@ -275,7 +332,14 @@ export function ArenaApp() {
           extendEndlessStairs(obs, furthestX, cfg.arena.difficulty ?? 1);
         }
         if (cfg.goal === EvolutionGoal.MOTOR_LOOP || cfg.arena.terrainEnabled || hasTerrain(obs)) {
-          const furthestX = Math.max(
+          const packLeftX = Math.min(
+            ...pop.map(c => {
+              const hoop = c.privateWorld?.find(o => o.type === 'hoop');
+              return hoop ? hoop.x : c.currentX;
+            }),
+            100
+          );
+          const packRightX = Math.max(
             ...pop.map(c => {
               const hoop = c.privateWorld?.find(o => o.type === 'hoop');
               return hoop ? hoop.x : c.currentX;
@@ -284,7 +348,7 @@ export function ArenaApp() {
           );
           extendEndlessTerrain(
             obs,
-            furthestX,
+            { leftX: packLeftX, rightX: packRightX },
             cfg.arena.terrainSeed ?? 42,
             cfg.arena.difficulty ?? 1,
             !!cfg.arena.terrainObstaclesEnabled
@@ -419,13 +483,14 @@ export function ArenaApp() {
         <div className="relative max-w-[1600px] mx-auto px-5 py-5 flex flex-col lg:flex-row lg:items-end justify-between gap-4">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--arena-gold)] mb-1">
-              Soft-body · Finished models only
+              Intergalactic Olympic Games · Finished models only
             </p>
             <h1 className="font-display text-5xl md:text-6xl text-[var(--arena-spot)] leading-none">
               Arena Championship
             </h1>
             <p className="mt-2 text-sm text-[var(--arena-crowd)] max-w-xl">
-              Bring creations from the Sandbox. No breeding here — only heats, podiums, and glory.
+              Bring creations from the Sandbox — body parts, skins, and all. Compete on rough
+              alien rock under twin moons. No breeding here — only heats, podiums, and glory.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -504,14 +569,14 @@ export function ArenaApp() {
             </div>
           </div>
 
-          <div className="rounded-xl overflow-hidden border border-[var(--arena-line)] shadow-[0_0_0_1px_rgba(232,184,74,0.08)] bg-slate-100">
+          <div className="rounded-xl overflow-hidden border border-[var(--arena-line)] shadow-[0_0_0_1px_rgba(232,184,74,0.08)] bg-slate-900 arena-stage">
             {phase === 'lobby' && creatures.length === 0 ? (
-              <div className="aspect-[16/9] min-h-[320px] flex flex-col items-center justify-center gap-3 bg-gradient-to-b from-slate-200 to-slate-300 text-slate-600 px-6 text-center">
+              <div className="aspect-[16/9] min-h-[320px] flex flex-col items-center justify-center gap-3 arena-stage-placeholder text-slate-300 px-6 text-center">
                 <Trophy className="w-12 h-12 text-[var(--arena-gold-deep)]" />
-                <p className="font-display text-3xl text-slate-800">Select champions & start a heat</p>
-                <p className="text-sm max-w-md">
-                  Finished models from the Sandbox appear on the right. Import a JSON if you
-                  transferred one by file.
+                <p className="font-display text-3xl text-[var(--arena-spot)]">Select champions & start a heat</p>
+                <p className="text-sm max-w-md text-[var(--arena-crowd)]">
+                  Finished models from the Sandbox appear on the right — with any body parts you
+                  placed in Studio. Import a JSON if you transferred one by file.
                 </p>
               </div>
             ) : (
@@ -524,6 +589,8 @@ export function ArenaApp() {
                 goal={config.goal}
                 isRunning={isRunning}
                 bestEverDistance={0}
+                appearanceByCreatureId={appearanceByCreatureId}
+                environmentTheme="olympic"
               />
             )}
           </div>
@@ -636,6 +703,31 @@ export function ArenaApp() {
 
         {/* Side rail */}
         <aside className="flex flex-col gap-3 min-w-0">
+          <div className="flex rounded-lg overflow-hidden border border-[var(--arena-line)] text-[10px] font-bold">
+            {(
+              [
+                ['events', 'Events'],
+                ['roster', 'Roster'],
+                ['leaderboard', 'Board'],
+                ['secrets', secretTrophiesTabLabel(secretRefreshKey)],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSideTab(id)}
+                className={`flex-1 px-1.5 py-2 cursor-pointer transition-colors ${
+                  sideTab === id
+                    ? 'bg-[var(--arena-gold)] text-[var(--arena-ink)]'
+                    : 'bg-black/20 text-[var(--arena-crowd)] hover:text-[var(--arena-spot)]'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {sideTab === 'events' && (
           <div className="rounded-xl border border-[var(--arena-line)] bg-[var(--arena-panel)]/70 p-3">
             <div className="font-display text-xl text-[var(--arena-spot)] mb-2">Events</div>
             <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
@@ -686,7 +778,9 @@ export function ArenaApp() {
               </select>
             )}
           </div>
+          )}
 
+          {sideTab === 'roster' && (
           <div className="rounded-xl border border-[var(--arena-line)] bg-[var(--arena-panel)]/70 p-3">
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="font-display text-xl text-[var(--arena-spot)]">Roster</div>
@@ -740,7 +834,9 @@ export function ArenaApp() {
               </ul>
             )}
           </div>
+          )}
 
+          {sideTab === 'leaderboard' && (
           <div className="rounded-xl border border-[var(--arena-line)] bg-[var(--arena-panel)]/70 p-3">
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="font-display text-xl text-[var(--arena-spot)] flex items-center gap-2">
@@ -780,11 +876,28 @@ export function ArenaApp() {
               </ol>
             )}
           </div>
+          )}
+
+          {sideTab === 'secrets' && (
+          <div className="rounded-xl border border-[var(--arena-line)] bg-[var(--arena-panel)]/70 p-3 max-h-[70vh] overflow-y-auto">
+            <div className="font-display text-xl text-[var(--arena-spot)] mb-2 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-[var(--arena-gold)]" />
+              {secretTrophiesTabLabel(secretRefreshKey)}
+            </div>
+            <SecretTrophiesPanel variant="arena" refreshKey={secretRefreshKey} />
+          </div>
+          )}
         </aside>
       </main>
 
+      <SecretGoalRevealOverlay
+        discovery={secretRevealQueue[0] ?? null}
+        onDismiss={() => setSecretRevealQueue(q => q.slice(1))}
+        variant="arena"
+      />
+
       <footer className="border-t border-[var(--arena-line)] py-4 text-center text-[11px] text-[var(--arena-crowd)]">
-        Arena Championship · creative track · scores follow the event arena goal · brains stay frozen
+        Arena Championship · Intergalactic Olympic circuit · rough-rock terrain · scores follow the event goal · brains stay frozen
       </footer>
     </div>
   );

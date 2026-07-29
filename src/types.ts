@@ -150,6 +150,14 @@ export interface Obstacle {
   targetRadius?: number;
   /** Parking / goal zone width when finish is a region */
   zoneWidth?: number;
+  /** Procedural heightfield seed (marker segment with label `procedural` only). */
+  terrainSeed?: number;
+  /** Procedural heightfield difficulty (marker segment only). */
+  terrainDifficulty?: number;
+  /** Generated left extent for procedural terrain bookkeeping. */
+  terrainLeftX?: number;
+  /** Generated right extent for procedural terrain bookkeeping. */
+  terrainRightX?: number;
 }
 
 export enum EvolutionGoal {
@@ -438,6 +446,35 @@ export interface WorldObject {
   angle?: number;
 }
 
+/** Morphology limits enforced when starting — and while scoring — a challenge. */
+export interface ChallengeBodyConstraints {
+  maxNodes?: number;
+  minNodes?: number;
+  maxMuscles?: number;
+  minFlexibleMuscles?: number;
+  maxMotorWheels?: number;
+  minMotorWheels?: number;
+  /** Per-wheel motorPower ceiling (blocks cranked drive exploits). */
+  maxMotorPower?: number;
+  maxAeroSurfaces?: number;
+  minAeroSurfaces?: number;
+  requireWing?: boolean;
+  requireParaglider?: boolean;
+  requireParachute?: boolean;
+  forbidAero?: boolean;
+  forbidMotorWheels?: boolean;
+  forbidPassiveWheels?: boolean;
+  maxMass?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  maxFootSpan?: number;
+  allowedEquipment?: {
+    motorWheels?: boolean;
+    passiveWheels?: boolean;
+    aero?: boolean;
+  };
+}
+
 export interface ChallengeDefinition {
   id: string;
   title: string;
@@ -447,6 +484,16 @@ export interface ChallengeDefinition {
   targetValue: number;
   maxGenerations: number;
   badgeLabel: string;
+  /** Body limits that gate launch and score credit. */
+  constraints?: ChallengeBodyConstraints;
+  /** Arena preset for this challenge (merged over zone defaults on start). */
+  arena?: Partial<ArenaModifiers>;
+  /** Episode length while the challenge is active. */
+  episodeSeconds?: number;
+  /** Keep NEAT topology fixed so morphology limits stay meaningful (default true when constrained). */
+  lockTopology?: boolean;
+  /** Shipped template that matches the constraint envelope. */
+  recommendedBody?: string;
 }
 
 export interface ChallengeProgress {
@@ -776,6 +823,16 @@ export interface Creature {
   goalScored?: boolean;
   /** Direct creature-to-private-ball collision occurred this episode */
   ballCreatureContacted?: boolean;
+  /** Last simulation frame with direct creature-to-ball contact */
+  ballContactFrame?: number;
+  /** Peak horizontal speed while at least one node was grounded (Max Speed) */
+  peakSupportedSpeed?: number;
+  /** Motor Ice: supported travel distance while on ice patches */
+  iceSupportedDistance?: number;
+  /** Motor Ice: farthest X while on ice with support */
+  iceSupportedX?: number;
+  /** Hit Target: best approach shaping toward nearest unhit target */
+  targetApproachBest?: number;
   /** Pins knocked from start pose */
   pinsDown?: number;
   /** Hazard Dash: number of authored hazards crossed in strict course order */
@@ -874,6 +931,24 @@ export interface Creature {
   wingSymFlapFrames?: number;
   /** Integral of pair bird-score on those frames (higher = more symmetrical) */
   wingSymFlapQuality?: number;
+  /** Stay Aloft: body-level frames while flapping in the current bout */
+  flightTimeBoutLevelFrames?: number;
+  /** Stay Aloft: low horizontal-jitter frames in the current bout */
+  flightTimeBoutStableHorizFrames?: number;
+  /** Stay Aloft: prior-frame horizontal speed for stability tracking */
+  flightTimePrevHorizSpeed?: number;
+  /** Stay Aloft: episode ground-touch count (penalised) */
+  flightGroundTouches?: number;
+  /** Flight Height: upward-only COM travel in the current bout (px) */
+  flightHeightBoutVerticalTravel?: number;
+  /** Flight Height: level-flight frames while flapping in the current bout */
+  flightHeightBoutLevelFrames?: number;
+  /** Airspeed: rotation accumulated in the current bout (radians) */
+  flightAirspeedBoutRotation?: number;
+  /** Acrobatics: downward COM travel during the current bout (px) */
+  attemptBoutVertDescent?: number;
+  /** Glide Range: first landing ended scoring — no further glide credit */
+  glideHasLanded?: boolean;
   /** Absolute rotation accumulated while airborne (radians) */
   airborneRotation?: number;
   /** Soft upright landings after sustained flight */
@@ -956,6 +1031,21 @@ export interface Creature {
   privateWorld?: WorldObject[];
   /** Recent muscle contraction ratios for gait fingerprints [muscleIdx][t] */
   gaitHistory?: number[][];
+  /** Secret-goal telemetry: farthest left/right COM this episode */
+  episodeMinX?: number;
+  episodeMaxX?: number;
+  /** Secret-goal telemetry: peak support height before any pit fall */
+  episodePeakSupportHeight?: number;
+  /** Secret-goal telemetry: frames with inverted posture heuristic */
+  upsideDownFrames?: number;
+  /** Secret-goal telemetry: fall frames within 30 frames of crossing finish */
+  postFinishFallFrames?: number;
+  /** Secret-goal telemetry: rapid vertical COM bounce frames (shuffle mishaps) */
+  episodeRapidBounceFrames?: number;
+  /** Prior-frame COM Y for bounce detection */
+  episodePrevComY?: number;
+  /** Peak stair height before any descent (secret climb goals) */
+  episodeStairPeak?: number;
 }
 
 export interface GenerationRecord {
@@ -1210,6 +1300,77 @@ export function effectiveAeroArea(
  */
 export const FLIGHT_SENSOR_COUNT = 6;
 
+/**
+ * C1 object-relative pack (always present; zeros when no in-range private object):
+ * relX, relY, proximity — see `objectRelativeSensorValues`.
+ */
+export const OBJECT_SENSOR_COUNT = 3;
+/** Max COM→object centre distance (px) that yields a non-zero observation. */
+export const OBJECT_SENSOR_RANGE_PX = 480;
+
+type ObjectSensorSample = Pick<WorldObject, 'type' | 'x' | 'y'>;
+
+/**
+ * Pick the goal's primary private interactive object for sensing.
+ * Prefer a unique ball, else hoop, else nearest box/pin.
+ */
+export function selectObjectSensorTarget(
+  objects: ReadonlyArray<ObjectSensorSample>,
+  comX: number,
+  comY: number
+): ObjectSensorSample | null {
+  if (objects.length === 0) return null;
+  const nearest = (pool: ReadonlyArray<ObjectSensorSample>) => {
+    let best: ObjectSensorSample | null = null;
+    let bestDist = Infinity;
+    for (const obj of pool) {
+      const dist = Math.hypot(obj.x - comX, obj.y - comY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = obj;
+      }
+    }
+    return best;
+  };
+  const balls = objects.filter(o => o.type === 'ball');
+  if (balls.length === 1) return balls[0];
+  if (balls.length > 1) return nearest(balls);
+  const hoops = objects.filter(o => o.type === 'hoop');
+  if (hoops.length > 0) return nearest(hoops);
+  const boxes = objects.filter(o => o.type === 'box');
+  if (boxes.length > 0) return nearest(boxes);
+  return nearest(objects);
+}
+
+/**
+ * Bounded object-relative observation toward the private goal object.
+ *
+ * Contract (D145 / C1):
+ * - Range-limited: beyond `rangePx`, or with no target, returns `[0, 0, 0]`.
+ * - In range: `[dx/R, dy/R, 1 − dist/R]` with each component in `[-1, 1]` /
+ *   `[0, 1]` respectively (dx/dy from COM to object centre).
+ * - Observation only — never applies force.
+ */
+export function objectRelativeSensorValues(
+  comX: number,
+  comY: number,
+  objects: ReadonlyArray<ObjectSensorSample>,
+  rangePx: number = OBJECT_SENSOR_RANGE_PX
+): [number, number, number] {
+  const range = Math.max(1, rangePx);
+  const target = selectObjectSensorTarget(objects, comX, comY);
+  if (!target) return [0, 0, 0];
+  const dx = target.x - comX;
+  const dy = target.y - comY;
+  const dist = Math.hypot(dx, dy);
+  if (dist > range) return [0, 0, 0];
+  return [
+    Math.max(-1, Math.min(1, dx / range)),
+    Math.max(-1, Math.min(1, dy / range)),
+    Math.max(0, Math.min(1, 1 - dist / range)),
+  ];
+}
+
 /** Expected NEAT I/O sizes for a body blueprint. */
 export function genomeIOForBlueprint(blueprint: CreatureBlueprint): { inputs: number; outputs: number } {
   const hasPara = blueprint.muscles.some(m => m.aeroType === 'paraglider');
@@ -1217,11 +1378,13 @@ export function genomeIOForBlueprint(blueprint: CreatureBlueprint): { inputs: nu
   return {
     // +5 para: speed, openness, sink, distToRamp, onRamp
     // +6 wing: vx, vy, sinθ, cosθ, ω, clearance (F06)
+    // +3 object: relX, relY, proximity (C1 / D145) — always present
     inputs:
       2 +
       3 * blueprint.nodes.length +
       (hasWing ? FLIGHT_SENSOR_COUNT : 0) +
-      (hasPara ? 5 : 0),
+      (hasPara ? 5 : 0) +
+      OBJECT_SENSOR_COUNT,
     outputs: countFlexibleMuscles(blueprint.muscles) + countMotorWheels(blueprint.nodes),
   };
 }
