@@ -12,6 +12,12 @@ import {
   genomeIOForBlueprint,
   isRigidBone,
 } from './types';
+import {
+  AppearanceRig,
+  bodyFingerprint,
+  loadCreaturePackages,
+} from './creaturePackages';
+import { sanitizeAppearanceRig } from './appearanceRig';
 import { getGoalInfo } from './goalCatalog';
 import { formatBestEver } from './formatGoal';
 import {
@@ -72,11 +78,38 @@ export interface FinishedModel {
   genome: Genome;
   /** Present when the product was trained on Para Ramp (three specialist heads). */
   paraPilot?: ParaPilot;
+  /** Cosmetic body parts from Studio when the model was saved. */
+  appearance?: AppearanceRig;
   traits: ModelTraits;
 }
 
 function newId(): string {
   return `fm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isValidAppearanceRig(value: unknown): value is AppearanceRig {
+  if (!value || typeof value !== 'object') return false;
+  const rig = value as AppearanceRig;
+  return rig.version === 1 && Array.isArray(rig.primitives);
+}
+
+/** Resolve saved body-part cosmetics for a finished model or blueprint. */
+export function resolveModelAppearance(
+  blueprint: CreatureBlueprint,
+  options: { name?: string; stored?: AppearanceRig } = {}
+): AppearanceRig | undefined {
+  if (options.stored) return sanitizeAppearanceRig(options.stored);
+  const packages = loadCreaturePackages();
+  const fingerprint = bodyFingerprint(blueprint);
+  const names = [options.name, blueprint.name].filter(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0
+  );
+  for (const label of names) {
+    const match = packages.find(item => item.displayName === label && item.appearance);
+    if (match?.appearance) return sanitizeAppearanceRig(match.appearance);
+  }
+  const byBody = packages.find(item => item.bodyFingerprint === fingerprint && item.appearance);
+  return byBody?.appearance ? sanitizeAppearanceRig(byBody.appearance) : undefined;
 }
 
 export function deriveModelTraits(
@@ -205,6 +238,9 @@ function normalizeLoadedModels(parsed: unknown[]): FinishedModel[] {
       ...m.traits,
       bodyTraits: Array.isArray(m.traits.bodyTraits) ? m.traits.bodyTraits : [],
     },
+    appearance: isValidAppearanceRig(m.appearance)
+      ? sanitizeAppearanceRig(m.appearance)
+      : resolveModelAppearance(m.blueprint, { name: m.name }),
   }));
 }
 
@@ -710,6 +746,8 @@ export interface SaveProductInput {
   generationDurationSec?: number;
   /** Replace an existing product id when re-saving. */
   replaceId?: string;
+  /** Body-part cosmetics from Studio (falls back to creature package lookup). */
+  appearance?: AppearanceRig;
 }
 
 /** Freeze the current creature as a named finished product.
@@ -743,6 +781,10 @@ export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
     blueprint: structuredClone(creature.blueprint),
     genome: structuredClone(creature.genome),
     paraPilot: creature.paraPilot ? structuredClone(creature.paraPilot) : undefined,
+    appearance: resolveModelAppearance(creature.blueprint, {
+      name,
+      stored: input.appearance ?? existing?.appearance,
+    }),
     traits: deriveModelTraits(
       creature.blueprint,
       creature.genome,
@@ -784,6 +826,7 @@ export function importElitePayloadAsProduct(
       : undefined;
   const shelf = loadFinishedModels();
   const existing = shelf.find(m => m.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const appearanceRaw = isValidAppearanceRig(data.appearance) ? data.appearance : undefined;
   const product: FinishedModel = {
     id: existing?.id ?? newId(),
     name,
@@ -797,6 +840,10 @@ export function importElitePayloadAsProduct(
     blueprint: structuredClone(data.blueprint),
     genome: structuredClone(data.genome),
     paraPilot: paraPilot ? structuredClone(paraPilot) : undefined,
+    appearance: resolveModelAppearance(data.blueprint, {
+      name,
+      stored: appearanceRaw ?? existing?.appearance,
+    }),
     traits: deriveModelTraits(data.blueprint, data.genome, goal, paraPilot),
   };
   upsertFinishedModel(product);
@@ -820,6 +867,7 @@ export function exportProductPayload(model: FinishedModel): Record<string, unkno
     blueprint: model.blueprint,
     genome: model.genome,
     paraPilot: model.paraPilot,
+    appearance: model.appearance,
     traits: model.traits,
     productId: model.id,
   };

@@ -4,19 +4,26 @@
  */
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Creature, Obstacle, EvolutionGoal, WorldObject, isRigidBone, isHardLengthConstraint, resolveLinkKind, findParallelHardLink, effectiveAeroArea } from '../types';
+import { Creature, Obstacle, EvolutionGoal, WorldObject, isRigidBone, resolveLinkKind, findParallelHardLink, effectiveAeroArea } from '../types';
 import { GROUND_Y } from '../physics';
+import {
+  parseProceduralTerrain,
+  proceduralTerrainSurfaceY,
+  TERRAIN_RENDER_STEP,
+} from '../terrain';
 import { drawChuteString } from '../aero';
 import { getGoalInfo } from '../goalCatalog';
 import { GoalInfoDialog } from './GoalInfoCard';
+import { RewardsBreakdownPanel } from './RewardsBreakdownPanel';
 import { AppearanceRig } from '../creaturePackages';
-import { drawAppearance } from '../appearance';
+import { drawAppearance, initBodyPartAssets } from '../appearance';
 import { EnvironmentTheme } from '../environments';
 import { normalizeSolidSegments, solidNodeIdSet } from '../solidSegments';
 import {
   isPerformanceDiagnosticsActive,
   recordRendererFrame,
 } from '../performanceDiagnostics';
+import type { RewardBreakdown } from '../rewardBreakdown';
 import {
   Flag,
   Trophy,
@@ -139,7 +146,8 @@ function drawMotionBackdrop(
   bgTop: number,
   bgWidth: number,
   bgHeight: number,
-  groundY: number
+  groundY: number,
+  drawGroundScenery = true
 ) {
   const bgBottom = bgTop + bgHeight;
   const viewMidY = bgTop + bgHeight * 0.5;
@@ -268,7 +276,11 @@ function drawMotionBackdrop(
   }
 
   // --- Ground-relative scenery (only when the floor is in/near view) ---
-  if (groundY < bgBottom + 80 && groundY > bgTop - 40) {
+  if (
+    drawGroundScenery &&
+    groundY < bgBottom + 80 &&
+    groundY > bgTop - 40
+  ) {
     // Far hills (slow) → mid ridge → near props (fast). Higher follow-p = slower scroll.
     const hillParallax = camX * 0.55;
     ctx.beginPath();
@@ -387,6 +399,168 @@ function drawMotionBackdrop(
   }
 }
 
+/** Exotic-world Olympic broadcast layer — twin moons, aurora, distant ring motif. */
+function drawOlympicExoticOverlay(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  bgLeft: number,
+  bgTop: number,
+  bgWidth: number,
+  bgHeight: number,
+  groundY: number
+) {
+  const bgBottom = bgTop + bgHeight;
+
+  // Dusk-indigo sky wash over the default backdrop
+  const skyWash = ctx.createLinearGradient(0, bgTop, 0, Math.min(bgBottom, groundY + 120));
+  skyWash.addColorStop(0, 'rgba(49, 46, 129, 0.55)');
+  skyWash.addColorStop(0.45, 'rgba(76, 29, 149, 0.28)');
+  skyWash.addColorStop(1, 'rgba(13, 148, 136, 0.18)');
+  ctx.fillStyle = skyWash;
+  ctx.fillRect(bgLeft, bgTop, bgWidth, bgHeight);
+
+  // Aurora ribbons (slow parallax)
+  const auroraParallax = camX * 0.12;
+  for (let band = 0; band < 4; band++) {
+    const y = bgTop + 40 + band * 55 + backdropHash(band, 901) * 30;
+    if (y > groundY - 200) continue;
+    ctx.save();
+    ctx.globalAlpha = 0.22 + backdropHash(band, 902) * 0.18;
+    ctx.beginPath();
+    const startX = bgLeft - auroraParallax + band * 40;
+    ctx.moveTo(startX, y);
+    for (let x = 0; x <= bgWidth + 80; x += 36) {
+      const wave = Math.sin(x * 0.012 + band * 1.7) * 18 + backdropHash(band, 903 + x) * 10;
+      ctx.lineTo(startX + x, y + wave);
+    }
+    const colors = ['#5eead4', '#a78bfa', '#fbbf24', '#f472b6'];
+    ctx.strokeStyle = colors[band % colors.length];
+    ctx.lineWidth = 14 + band * 3;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Twin moons
+  const moonParallax = camX * 0.06;
+  const moons = [
+    { x: bgLeft + bgWidth * 0.72 + moonParallax, y: bgTop + 58, r: 22, fill: '#fde68a', glow: 'rgba(251, 191, 36, 0.35)' },
+    { x: bgLeft + bgWidth * 0.84 + moonParallax, y: bgTop + 92, r: 14, fill: '#c4b5fd', glow: 'rgba(167, 139, 250, 0.3)' },
+  ];
+  for (const moon of moons) {
+    if (moon.y > groundY - 120) continue;
+    ctx.fillStyle = moon.glow;
+    ctx.beginPath();
+    ctx.arc(moon.x, moon.y, moon.r * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = moon.fill;
+    ctx.beginPath();
+    ctx.arc(moon.x, moon.y, moon.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.arc(moon.x - moon.r * 0.25, moon.y - moon.r * 0.2, moon.r * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Faint Olympic rings in the upper sky (broadcast watermark)
+  const ringsX = bgLeft + bgWidth * 0.18 + camX * 0.04;
+  const ringsY = bgTop + 72;
+  if (ringsY < groundY - 180) {
+    const ringColors = ['#0085c7', '#f4c300', '#000000', '#009f3d', '#df0024'];
+    const ringR = 11;
+    const ringGap = 26;
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    ctx.lineWidth = 3.5;
+    for (let i = 0; i < 5; i++) {
+      const row = i < 3 ? 0 : 1;
+      const col = i < 3 ? i : i - 2;
+      const cx = ringsX + col * ringGap + (row === 1 ? ringGap * 0.5 : 0);
+      const cy = ringsY + row * ringGap * 0.85;
+      ctx.strokeStyle = ringColors[i];
+      ctx.beginPath();
+      ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Alien crystal spires on the horizon
+  const spireParallax = camX * 0.42;
+  const spireBucket = 220;
+  const s0 = Math.floor((bgLeft - spireParallax) / spireBucket) - 1;
+  const s1 = Math.ceil((bgLeft + bgWidth - spireParallax) / spireBucket) + 1;
+  for (let b = s0; b <= s1; b++) {
+    if (backdropHash(b, 910) < 0.55) continue;
+    const x = b * spireBucket + backdropHash(b, 911) * 120 + spireParallax;
+    const baseY = groundY;
+    const h = 60 + backdropHash(b, 912) * 110;
+    const w = 16 + backdropHash(b, 913) * 22;
+    if (baseY - h < bgTop - 40 || baseY > bgBottom + 40) continue;
+    ctx.fillStyle = `rgba(${120 + backdropHash(b, 914) * 80}, ${60 + backdropHash(b, 915) * 50}, ${180 + backdropHash(b, 916) * 60}, 0.35)`;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY);
+    ctx.lineTo(x + w * 0.5, baseY - h);
+    ctx.lineTo(x + w, baseY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function fillRoughRockTerrain(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  groundY: number,
+  leftX: number,
+  rightX: number,
+  surfaceY: (x: number) => number
+) {
+  const step = Math.max(8, TERRAIN_RENDER_STEP);
+  ctx.beginPath();
+  ctx.moveTo(leftX, groundY + 600);
+  ctx.lineTo(leftX, surfaceY(leftX));
+  for (let x = leftX + step; x < rightX; x += step) {
+    ctx.lineTo(x, surfaceY(x));
+  }
+  ctx.lineTo(rightX, surfaceY(rightX));
+  ctx.lineTo(rightX, groundY + 600);
+  ctx.closePath();
+  const dirtGrad = ctx.createLinearGradient(camX, groundY - 80, camX, groundY + 300);
+  dirtGrad.addColorStop(0, '#78716c');
+  dirtGrad.addColorStop(0.25, '#57534e');
+  dirtGrad.addColorStop(0.65, '#44403c');
+  dirtGrad.addColorStop(1, '#292524');
+  ctx.fillStyle = dirtGrad;
+  ctx.fill();
+  ctx.strokeStyle = '#1c1917';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(leftX, surfaceY(leftX));
+  for (let x = leftX + step; x <= rightX; x += step) {
+    ctx.lineTo(x, surfaceY(x));
+  }
+  ctx.stroke();
+  // Rocky grit along the surface
+  const gritBucket = 24;
+  const g0 = Math.floor(leftX / gritBucket);
+  const g1 = Math.ceil(rightX / gritBucket);
+  for (let b = g0; b <= g1; b++) {
+    if (backdropHash(b, 920) < 0.4) continue;
+    const x = b * gritBucket + backdropHash(b, 921) * gritBucket * 0.6;
+    if (x < leftX - 8 || x > rightX + 8) continue;
+    const y = surfaceY(x);
+    const size = 2 + backdropHash(b, 922) * 5;
+    ctx.fillStyle = backdropHash(b, 923) > 0.5 ? '#a8a29e' : '#44403c';
+    ctx.beginPath();
+    ctx.arc(x, y - size * 0.3, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 interface VisualizerProps {
   creatures: Creature[];
   selectedCreatureId: string | null;
@@ -423,7 +597,13 @@ interface VisualizerProps {
   /** Disable Next Gen / Reset (e.g. competition) */
   runControlsLocked?: boolean;
   appearance?: AppearanceRig;
+  /** Per-creature cosmetics (arena heats with mixed models). */
+  appearanceByCreatureId?: Record<string, AppearanceRig>;
   environmentTheme?: EnvironmentTheme;
+  /** Live leader reward terms for the active goal */
+  rewardBreakdown?: RewardBreakdown | null;
+  /** Previous generation's leader breakdown (for up/down arrows) */
+  rewardBaseline?: RewardBreakdown | null;
 }
 
 export const Visualizer: React.FC<VisualizerProps> = ({
@@ -453,7 +633,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({
   onSetSimulationSpeed,
   runControlsLocked = false,
   appearance,
+  appearanceByCreatureId,
   environmentTheme = 'meadow',
+  rewardBreakdown = null,
+  rewardBaseline = null,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -478,6 +661,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({
       Math.max(VISUALIZER_ZOOM_MIN, Math.round((prev - VISUALIZER_ZOOM_STEP) * 100) / 100)
     );
   const handleResetZoom = () => setZoom(1.0);
+
+  useEffect(() => {
+    initBodyPartAssets();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -580,19 +767,82 @@ export const Visualizer: React.FC<VisualizerProps> = ({
       const bgWidth = viewW + 400;
       const bgHeight = viewH + 400;
 
+      const terrainActive = obstacles.some(o => o.type === 'terrain');
+      const proceduralTerrain = parseProceduralTerrain(obstacles);
+
       // Sky fill + layered backdrop (works at any flight altitude)
-      drawMotionBackdrop(ctx, camX, camY, bgLeft, bgTop, bgWidth, bgHeight, GROUND_Y);
+      drawMotionBackdrop(
+        ctx,
+        camX,
+        camY,
+        bgLeft,
+        bgTop,
+        bgWidth,
+        bgHeight,
+        GROUND_Y,
+        !terrainActive
+      );
+      if (environmentTheme === 'olympic') {
+        drawOlympicExoticOverlay(ctx, camX, bgLeft, bgTop, bgWidth, bgHeight, GROUND_Y);
+      }
       const themeTint: Record<EnvironmentTheme, string> = {
         meadow: 'rgba(134, 239, 172, 0.05)',
         desert: 'rgba(251, 191, 36, 0.12)',
         alpine: 'rgba(186, 230, 253, 0.12)',
         night: 'rgba(15, 23, 42, 0.30)',
+        olympic: 'rgba(94, 234, 212, 0.08)',
       };
       ctx.fillStyle = themeTint[environmentTheme];
       ctx.fillRect(bgLeft, bgTop, bgWidth, bgHeight);
 
-      const terrainSegs = obstacles.filter(o => o.type === 'terrain');
-      if (terrainSegs.length > 0) {
+      const terrainSegs = terrainActive && !proceduralTerrain
+        ? obstacles
+            .filter(o => o.type === 'terrain')
+            .sort((a, b) => a.x - b.x)
+        : [];
+
+      const drawTerrainProfile = (
+        leftX: number,
+        rightX: number,
+        surfaceY: (x: number) => number
+      ) => {
+        if (environmentTheme === 'olympic') {
+          fillRoughRockTerrain(ctx, camX, GROUND_Y, leftX, rightX, surfaceY);
+          return;
+        }
+        const step = Math.max(8, Math.min(TERRAIN_RENDER_STEP, Math.round(TERRAIN_RENDER_STEP / zoom)));
+        ctx.beginPath();
+        ctx.moveTo(leftX, GROUND_Y + 600);
+        ctx.lineTo(leftX, surfaceY(leftX));
+        for (let x = leftX + step; x < rightX; x += step) {
+          ctx.lineTo(x, surfaceY(x));
+        }
+        ctx.lineTo(rightX, surfaceY(rightX));
+        ctx.lineTo(rightX, GROUND_Y + 600);
+        ctx.closePath();
+        const dirtGrad = ctx.createLinearGradient(camX, GROUND_Y - 80, camX, GROUND_Y + 300);
+        dirtGrad.addColorStop(0, '#d6d3d1');
+        dirtGrad.addColorStop(0.35, '#a8a29e');
+        dirtGrad.addColorStop(1, '#78716c');
+        ctx.fillStyle = dirtGrad;
+        ctx.fill();
+        ctx.strokeStyle = '#57534e';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(leftX, surfaceY(leftX));
+        for (let x = leftX + step; x <= rightX; x += step) {
+          ctx.lineTo(x, surfaceY(x));
+        }
+        ctx.stroke();
+      };
+
+      if (proceduralTerrain) {
+        const leftX = bgLeft - 40;
+        const rightX = bgLeft + bgWidth + 40;
+        drawTerrainProfile(leftX, rightX, x =>
+          proceduralTerrainSurfaceY(x, proceduralTerrain.seed, proceduralTerrain.difficulty)
+        );
+      } else if (terrainSegs.length > 0) {
         // Filled undulating ground polygon
         ctx.beginPath();
         const first = terrainSegs[0];
@@ -608,13 +858,19 @@ export const Visualizer: React.FC<VisualizerProps> = ({
         ctx.lineTo(lastX, GROUND_Y + 600);
         ctx.closePath();
         const dirtGrad = ctx.createLinearGradient(camX, GROUND_Y - 80, camX, GROUND_Y + 300);
-        dirtGrad.addColorStop(0, '#d6d3d1');
-        dirtGrad.addColorStop(0.35, '#a8a29e');
-        dirtGrad.addColorStop(1, '#78716c');
+        if (environmentTheme === 'olympic') {
+          dirtGrad.addColorStop(0, '#78716c');
+          dirtGrad.addColorStop(0.35, '#57534e');
+          dirtGrad.addColorStop(1, '#292524');
+        } else {
+          dirtGrad.addColorStop(0, '#d6d3d1');
+          dirtGrad.addColorStop(0.35, '#a8a29e');
+          dirtGrad.addColorStop(1, '#78716c');
+        }
         ctx.fillStyle = dirtGrad;
         ctx.fill();
-        ctx.strokeStyle = '#57534e';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = environmentTheme === 'olympic' ? '#1c1917' : '#57534e';
+        ctx.lineWidth = environmentTheme === 'olympic' ? 2.5 : 2;
         ctx.beginPath();
         ctx.moveTo(first.x, first.y);
         for (const seg of terrainSegs) {
@@ -623,6 +879,15 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.lineTo(x2, y2);
         }
         ctx.stroke();
+      } else if (environmentTheme === 'olympic') {
+        ctx.fillStyle = '#57534e';
+        ctx.fillRect(bgLeft, GROUND_Y, bgWidth, 5);
+        const dirtGrad = ctx.createLinearGradient(camX, GROUND_Y + 5, camX, GROUND_Y + 300);
+        dirtGrad.addColorStop(0, '#78716c');
+        dirtGrad.addColorStop(0.5, '#44403c');
+        dirtGrad.addColorStop(1, '#292524');
+        ctx.fillStyle = dirtGrad;
+        ctx.fillRect(bgLeft, GROUND_Y + 5, bgWidth, 600);
       } else {
         ctx.fillStyle = '#cbd5e1';
         ctx.fillRect(bgLeft, GROUND_Y, bgWidth, 4);
@@ -762,17 +1027,19 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.fillText(`CP${(obs.checkpointIndex ?? 0) + 1}`, obs.x + 4, obs.y + 12);
         } else if (obs.type === 'target') {
           const r = obs.targetRadius ?? obs.width / 2;
+          const cx = obs.x + obs.width / 2;
+          const cy = obs.y + obs.height / 2;
           ctx.strokeStyle = '#e11d48';
           ctx.lineWidth = 3;
           ctx.beginPath();
-          ctx.arc(obs.x, obs.y, r, 0, Math.PI * 2);
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
           ctx.stroke();
           ctx.beginPath();
-          ctx.arc(obs.x, obs.y, r * 0.55, 0, Math.PI * 2);
+          ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
           ctx.stroke();
           ctx.fillStyle = '#be123c';
           ctx.beginPath();
-          ctx.arc(obs.x, obs.y, 4, 0, Math.PI * 2);
+          ctx.arc(cx, cy, 4, 0, Math.PI * 2);
           ctx.fill();
         }
       }
@@ -897,9 +1164,11 @@ export const Visualizer: React.FC<VisualizerProps> = ({
         if (isSelected) opacity = 1.0;
         else if (isLeader) opacity = 0.75;
 
-        drawAppearance(ctx, creature, appearance, 'behind', opacity);
+        const creatureAppearance = appearanceByCreatureId?.[creature.id] ?? appearance;
 
-        if (!appearance?.hideSkeleton) {
+        drawAppearance(ctx, creature, creatureAppearance, 'behind', opacity);
+
+        if (!creatureAppearance?.hideSkeleton && showMuscles) {
         for (const muscle of creature.muscles) {
           const nodeA = creature.nodes[muscle.nodeA];
           const nodeB = creature.nodes[muscle.nodeB];
@@ -909,10 +1178,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           const dy = nodeB.y - nodeA.y;
           const len = Math.sqrt(dx * dx + dy * dy) || 1;
           const kind = resolveLinkKind(muscle);
-          const isHard = isHardLengthConstraint(muscle);
-
-          // Hard links always visible; only soft muscles respect the toggle
-          if (!isHard && !showMuscles) continue;
 
           // Offset soft stroke when paralleled with a hard link on the same pair
           let drawAx = nodeA.x;
@@ -1178,7 +1443,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
         }
         }
 
-        drawAppearance(ctx, creature, appearance, 'front', opacity);
+        drawAppearance(ctx, creature, creatureAppearance, 'front', opacity);
 
         if ((isLeader || isSelected || creature.displayName) && opacity > 0.45) {
           const indicatorY = Math.min(...creature.nodes.map(n => n.y)) - 18;
@@ -1215,7 +1480,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
 
     render();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [creatures, selectedCreatureId, dimensions, obstacles, worldObjects, goal, bestEverDistance, zoom, showMuscles, showGhostPack, appearance, environmentTheme]);
+  }, [creatures, selectedCreatureId, dimensions, obstacles, worldObjects, goal, bestEverDistance, zoom, showMuscles, showGhostPack, appearance, appearanceByCreatureId, environmentTheme]);
 
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     event.preventDefault();
@@ -1330,6 +1595,14 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           className="absolute inset-0 w-full h-full cursor-crosshair"
           id="simulation-canvas"
         />
+
+        {showRunOverlay && rewardBreakdown && (
+          <RewardsBreakdownPanel
+            breakdown={rewardBreakdown}
+            baseline={rewardBaseline}
+            generation={currentGen}
+          />
+        )}
 
         {showRunOverlay && (
           <div
@@ -1469,7 +1742,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
                 ? 'border-slate-200/90 text-slate-700 hover:bg-slate-100'
                 : 'border-amber-300 bg-amber-50/95 text-amber-800 hover:bg-amber-100'
             }`}
-            title={showMuscles ? 'Hide flexible muscles (bones stay visible)' : 'Show flexible muscles'}
+            title={showMuscles ? 'Hide skeleton (nodes, muscles, and bones)' : 'Show skeleton'}
             id="toggle-muscles-btn"
             aria-pressed={!showMuscles}
           >

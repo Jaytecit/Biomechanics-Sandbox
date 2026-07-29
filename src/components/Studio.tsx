@@ -41,7 +41,8 @@ import {
   nextCreatureVersionName,
   saveStudioDraft,
 } from '../creaturePackages';
-import { BiologicalPreset, createBiologicalPreset, createGooglyEyePairPrimitive, createBodyPartPrimitive, drawAppearance } from '../appearance';
+import { BiologicalPreset, createBiologicalPreset, createGooglyEyePairPrimitive, drawAppearance, initBodyPartAssets } from '../appearance';
+import { createBodyPartPrimitive, bodyPartTransform, muscleBoneMetrics } from '../bodyPartRender';
 import {
   BODY_PART_CATALOG,
   BODY_PART_CATEGORIES,
@@ -49,7 +50,6 @@ import {
   BodyPartPack,
   getBodyPartDef,
 } from '../bodyPartCatalog';
-import { bodyPartTransform } from '../bodyPartRender';
 import { CreatureLibraryPanel } from './CreatureLibraryPanel';
 import {
   MAX_SOLID_SEGMENTS,
@@ -285,6 +285,10 @@ export const Studio: React.FC<StudioProps> = ({
   const zoneLibrary = libraryTemplates || CREATURE_TEMPLATES;
 
   // Handle responsive sizing — only track width; height is locked to avoid origin jump
+  useEffect(() => {
+    initBodyPartAssets();
+  }, []);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -547,17 +551,24 @@ export const Studio: React.FC<StudioProps> = ({
       return;
     }
 
+    const nodeIndexById = new Map(nodes.map((node, index) => [node.id, index]));
+    const skinSkeleton = {
+      nodes: nodes.map(node => ({ x: node.x, y: node.y, radius: node.radius })),
+      muscles: muscles.map(muscle => ({
+        nodeA: nodeIndexById.get(muscle.nodeA) ?? -1,
+        nodeB: nodeIndexById.get(muscle.nodeB) ?? -1,
+      })),
+    };
     const part = createBodyPartPrimitive(
       assetId,
       anchor.type === 'node' ? anchor.index : undefined,
-      anchor.type === 'muscle' ? anchor.index : undefined
+      anchor.type === 'muscle' ? anchor.index : undefined,
+      anchor.type === 'muscle'
+        ? muscleBoneMetrics(anchor.index, skinSkeleton)?.length
+        : undefined
     );
     part.layer = skinLayer;
     part.z = skinLayer === 'front' ? 105 : 22;
-    if (anchor.type === 'muscle') {
-      part.points[0] = { x: 0, y: 0 };
-      part.points[1] = { x: def.defaultScale, y: def.defaultScale };
-    }
     setSelectedSkinPreset(null);
     setSelectedSkinPartId(part.id);
     setAppearance(current => ({ ...current, primitives: [...current.primitives, part] }));
@@ -569,16 +580,29 @@ export const Studio: React.FC<StudioProps> = ({
     scale: number;
     rotationDeg: number;
     mirror: boolean;
+    boneAlign: boolean;
+    boneStretch: boolean;
+    anchorAlong: number;
   }>) => {
     if (!selectedSkinPartId) return;
+    const nodeIndexById = new Map(nodes.map((node, index) => [node.id, index]));
+    const skinSkeleton = {
+      nodes: nodes.map(node => ({ x: node.x, y: node.y, radius: node.radius })),
+      muscles: muscles.map(muscle => ({
+        nodeA: nodeIndexById.get(muscle.nodeA) ?? -1,
+        nodeB: nodeIndexById.get(muscle.nodeB) ?? -1,
+      })),
+    };
     setAppearance(current => ({
       ...current,
       primitives: current.primitives.map(part => {
         if (part.id !== selectedSkinPartId || part.kind !== 'bodyPart') return part;
-        const t = bodyPartTransform(part);
         const next = { ...part, points: part.points.map(p => ({ ...p })) };
         if (patch.offsetX !== undefined) next.points[0] = { ...next.points[0], x: patch.offsetX };
         if (patch.offsetY !== undefined) next.points[0] = { ...next.points[0], y: patch.offsetY };
+        if (patch.anchorAlong !== undefined) {
+          next.points[0] = { ...next.points[0], x: patch.anchorAlong };
+        }
         if (patch.scale !== undefined) {
           next.points[1] = { x: patch.scale, y: patch.scale };
         }
@@ -586,6 +610,26 @@ export const Studio: React.FC<StudioProps> = ({
           next.points[2] = { x: (patch.rotationDeg * Math.PI) / 180, y: 0 };
         }
         if (patch.mirror !== undefined) next.mirror = patch.mirror;
+        if (patch.boneAlign !== undefined) {
+          next.boneAlign = patch.boneAlign || undefined;
+          if (patch.boneAlign && next.anchorMuscle !== undefined && !next.boneStretch) {
+            const along = next.points[0]?.x ?? 0;
+            if (along === 0 && (next.points[0]?.y ?? 0) === 0) {
+              next.points[0] = { x: 0.5, y: 0 };
+            }
+          }
+        }
+        if (patch.boneStretch !== undefined) {
+          next.boneStretch = patch.boneStretch || undefined;
+          if (patch.boneStretch && next.anchorMuscle !== undefined) {
+            next.boneAlign = true;
+            const bone = muscleBoneMetrics(next.anchorMuscle, skinSkeleton);
+            if (bone) next.boneRestLength = bone.length;
+            if ((next.points[0]?.x ?? 0.5) === 0.5) {
+              next.points[0] = { x: 0, y: next.points[0]?.y ?? 0 };
+            }
+          }
+        }
         return next;
       }),
     }));
@@ -2689,6 +2733,7 @@ export const Studio: React.FC<StudioProps> = ({
                 <option value="all">All packs</option>
                 <option value="monster">Monster</option>
                 <option value="modular">Human / shoes</option>
+                <option value="animal">Animals</option>
               </select>
               <select
                 aria-label="Filter category"
@@ -2729,8 +2774,9 @@ export const Studio: React.FC<StudioProps> = ({
               ))}
             </div>
             <p className="text-[10px] leading-relaxed text-slate-500">
-              Select a node (face, foot) or link (limb), then click a part. Monster + human/shoe
-              packs ship with the project (Kenney CC0 — see assets/bodyParts/licenses/).
+              Select a node (face, foot) or link (limb), then click a part. Link-anchored
+              limbs follow the bone angle and stretch by default. Toggle follow / stretch in
+              Transform. Monster, human/shoe, and animal packs ship with the project (Kenney CC0).
             </p>
           </div>
 
@@ -2742,8 +2788,36 @@ export const Studio: React.FC<StudioProps> = ({
               {(() => {
                 const t = bodyPartTransform(selectedSkinPart);
                 const rotDeg = Math.round((t.rotation * 180) / Math.PI);
+                const onLink = selectedSkinPart.anchorMuscle !== undefined;
+                const boneAlign = !!selectedSkinPart.boneAlign;
+                const boneStretch = !!selectedSkinPart.boneStretch;
+                const alongMin = boneStretch ? 0 : 0;
+                const alongMax = boneStretch ? 1 : 1;
+                const alongVal = onLink && boneAlign
+                  ? t.offsetX
+                  : t.offsetX;
                 return (
                   <>
+                    {onLink && (
+                      <div className="space-y-1.5 rounded border border-indigo-100 bg-white/70 p-1.5">
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={boneAlign}
+                            onChange={e => updateSelectedBodyPart({ boneAlign: e.target.checked })}
+                          />
+                          Follow link angle
+                        </label>
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={boneStretch}
+                            onChange={e => updateSelectedBodyPart({ boneStretch: e.target.checked })}
+                          />
+                          Stretch to link length
+                        </label>
+                      </div>
+                    )}
                     <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
                       Scale
                       <input
@@ -2758,7 +2832,7 @@ export const Studio: React.FC<StudioProps> = ({
                       <span className="w-10 text-right font-mono text-[10px]">{t.scaleX.toFixed(2)}</span>
                     </label>
                     <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
-                      Rotate
+                      {boneAlign ? 'Angle offset' : 'Rotate'}
                       <input
                         type="range"
                         min={-180}
@@ -2770,30 +2844,64 @@ export const Studio: React.FC<StudioProps> = ({
                       />
                       <span className="w-10 text-right font-mono text-[10px]">{rotDeg}°</span>
                     </label>
-                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
-                      Offset X
-                      <input
-                        type="range"
-                        min={-80}
-                        max={80}
-                        step={1}
-                        value={t.offsetX}
-                        onChange={e => updateSelectedBodyPart({ offsetX: Number(e.target.value) })}
-                        className="flex-1 accent-indigo-600"
-                      />
-                    </label>
-                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
-                      Offset Y
-                      <input
-                        type="range"
-                        min={-80}
-                        max={80}
-                        step={1}
-                        value={t.offsetY}
-                        onChange={e => updateSelectedBodyPart({ offsetY: Number(e.target.value) })}
-                        className="flex-1 accent-indigo-600"
-                      />
-                    </label>
+                    {onLink && boneAlign ? (
+                      <>
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          Along link
+                          <input
+                            type="range"
+                            min={alongMin}
+                            max={alongMax}
+                            step={0.01}
+                            value={Math.max(alongMin, Math.min(alongMax, alongVal))}
+                            onChange={e => updateSelectedBodyPart({ anchorAlong: Number(e.target.value) })}
+                            className="flex-1 accent-indigo-600"
+                          />
+                          <span className="w-10 text-right font-mono text-[10px]">
+                            {Math.round(alongVal * 100)}%
+                          </span>
+                        </label>
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          Perpendicular
+                          <input
+                            type="range"
+                            min={-40}
+                            max={40}
+                            step={1}
+                            value={t.offsetY}
+                            onChange={e => updateSelectedBodyPart({ offsetY: Number(e.target.value) })}
+                            className="flex-1 accent-indigo-600"
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <>
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          Offset X
+                          <input
+                            type="range"
+                            min={-80}
+                            max={80}
+                            step={1}
+                            value={t.offsetX}
+                            onChange={e => updateSelectedBodyPart({ offsetX: Number(e.target.value) })}
+                            className="flex-1 accent-indigo-600"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                          Offset Y
+                          <input
+                            type="range"
+                            min={-80}
+                            max={80}
+                            step={1}
+                            value={t.offsetY}
+                            onChange={e => updateSelectedBodyPart({ offsetY: Number(e.target.value) })}
+                            className="flex-1 accent-indigo-600"
+                          />
+                        </label>
+                      </>
+                    )}
                     <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
                       <input
                         type="checkbox"

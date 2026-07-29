@@ -5,11 +5,7 @@
  * Shipped Kenney body-part library (CC0). See src/assets/bodyParts/licenses/.
  */
 
-import { readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-export type BodyPartPack = 'monster' | 'modular';
+export type BodyPartPack = 'monster' | 'modular' | 'animal';
 
 export type BodyPartCategory =
   | 'leg'
@@ -22,6 +18,7 @@ export type BodyPartCategory =
   | 'ear'
   | 'horn'
   | 'shoe'
+  | 'animal'
   | 'other';
 
 export type BodyPartAnchorHint = 'node' | 'muscle' | 'either';
@@ -31,7 +28,7 @@ export interface BodyPartDef {
   label: string;
   category: BodyPartCategory;
   pack: BodyPartPack;
-  /** Bundled PNG resolved by Vite (?url) or absolute path in Node smoke tests. */
+  /** Bundled PNG URL resolved by Vite (?url). */
   url: string;
   pivotX: number;
   pivotY: number;
@@ -40,39 +37,11 @@ export interface BodyPartDef {
   anchorHint: BodyPartAnchorHint;
 }
 
-const moduleDir = dirname(fileURLToPath(import.meta.url));
-const assetsRoot = join(moduleDir, 'assets', 'bodyParts');
-
-function loadPngModulesFromFs(): Record<string, string> {
-  const modules: Record<string, string> = {};
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir)) {
-      const fullPath = join(dir, entry);
-      if (statSync(fullPath).isDirectory()) {
-        walk(fullPath);
-        continue;
-      }
-      if (!entry.toLowerCase().endsWith('.png')) continue;
-      const relFromSrc = relative(moduleDir, fullPath).replace(/\\/g, '/');
-      modules[`../${relFromSrc}`] = fullPath;
-    }
-  };
-  walk(assetsRoot);
-  return modules;
-}
-
-function loadPngModules(): Record<string, string> {
-  if (typeof import.meta.glob === 'function') {
-    return import.meta.glob<string>('../assets/bodyParts/**/*.png', {
-      eager: true,
-      query: '?url',
-      import: 'default',
-    });
-  }
-  return loadPngModulesFromFs();
-}
-
-const pngModules = loadPngModules();
+const pngModules = import.meta.glob<string>('./assets/bodyParts/**/*.png', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+});
 
 function fileName(path: string): string {
   return path.split(/[/\\]/).pop()?.replace(/\.png$/i, '') ?? 'part';
@@ -88,6 +57,7 @@ function humanLabel(name: string): string {
 function inferCategory(relativePath: string, name: string): BodyPartCategory {
   const p = relativePath.toLowerCase();
   const n = name.toLowerCase();
+  if (p.includes('/kenney-animal/')) return 'animal';
   if (p.includes('/shoes/')) return 'shoe';
   if (p.includes('/eyebrows/')) return 'eyebrow';
   if (p.includes('/eyes/')) return 'eye';
@@ -104,6 +74,31 @@ function inferCategory(relativePath: string, name: string): BodyPartCategory {
   return 'other';
 }
 
+function inferPack(relativePath: string): BodyPartPack {
+  if (relativePath.startsWith('kenney-modular/')) return 'modular';
+  if (relativePath.startsWith('kenney-animal/')) return 'animal';
+  return 'monster';
+}
+
+function buildAssetId(pack: BodyPartPack, relativePath: string, name: string): string {
+  if (pack === 'animal' && relativePath.includes('Round (outline)/')) {
+    return `animal:${name}_outline`;
+  }
+  return `${pack}:${name}`;
+}
+
+function buildLabel(name: string, relativePath: string): string {
+  const base = humanLabel(name);
+  if (relativePath.includes('Round (outline)/')) return `${base} (outline)`;
+  return base;
+}
+
+function inferDefaultScale(pack: BodyPartPack): number {
+  if (pack === 'modular') return 0.9;
+  if (pack === 'animal') return 0.42;
+  return 1;
+}
+
 function inferPivot(category: BodyPartCategory): { pivotX: number; pivotY: number } {
   switch (category) {
     case 'leg':
@@ -116,6 +111,8 @@ function inferPivot(category: BodyPartCategory): { pivotX: number; pivotY: numbe
     case 'horn':
     case 'ear':
       return { pivotX: 0.5, pivotY: 0.82 };
+    case 'animal':
+      return { pivotX: 0.5, pivotY: 0.58 };
     default:
       return { pivotX: 0.5, pivotY: 0.5 };
   }
@@ -130,23 +127,24 @@ function buildCatalog(): BodyPartDef[] {
   const items: BodyPartDef[] = [];
   for (const [modulePath, url] of Object.entries(pngModules)) {
     const normalized = modulePath.replace(/\\/g, '/');
-    const assetsIdx = normalized.indexOf('/assets/bodyParts/');
+    const marker = 'assets/bodyParts/';
+    const assetsIdx = normalized.indexOf(marker);
     if (assetsIdx < 0) continue;
-    const relativePath = normalized.slice(assetsIdx + '/assets/bodyParts/'.length);
+    const relativePath = normalized.slice(assetsIdx + marker.length);
     const name = fileName(relativePath);
-    const pack: BodyPartPack = relativePath.startsWith('kenney-modular/') ? 'modular' : 'monster';
+    const pack = inferPack(relativePath);
     const category = inferCategory(relativePath, name);
     const { pivotX, pivotY } = inferPivot(category);
-    const id = `${pack}:${name}`;
+    const id = buildAssetId(pack, relativePath, name);
     items.push({
       id,
-      label: humanLabel(name),
+      label: buildLabel(name, relativePath),
       category,
       pack,
       url,
       pivotX,
       pivotY,
-      defaultScale: pack === 'modular' ? 0.9 : 1,
+      defaultScale: inferDefaultScale(pack),
       mirrorAllowed: category !== 'shoe' && category !== 'eye',
       anchorHint: inferAnchorHint(category),
     });
@@ -173,6 +171,7 @@ export const BODY_PART_CATEGORIES: BodyPartCategory[] = [
   'ear',
   'horn',
   'shoe',
+  'animal',
   'other',
 ];
 

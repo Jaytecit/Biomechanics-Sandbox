@@ -34,6 +34,12 @@ export type AppearancePrimitive = {
   assetId?: string;
   anchorNode?: number;
   anchorMuscle?: number;
+  /** With anchorMuscle: rotate the sprite with the link (+ manual rotation offset). */
+  boneAlign?: boolean;
+  /** With anchorMuscle: scale length to the live link span (uses boneRestLength). */
+  boneStretch?: boolean;
+  /** Reference link length (world units) captured when boneStretch was enabled. */
+  boneRestLength?: number;
   /** Rigid lock group id for kind rigidPlate (D130). */
   rigidGroupId?: string;
   layer: 'behind' | 'front';

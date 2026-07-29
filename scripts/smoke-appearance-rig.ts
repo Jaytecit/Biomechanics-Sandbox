@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { createBiologicalPreset, createBodyPartPrimitive, createGooglyEyePairPrimitive, deformRigPoint, sanitizeAppearanceRig } from '../src/appearance';
-import { BODY_PART_CATALOG } from '../src/bodyPartCatalog';
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { createBiologicalPreset, deformRigPoint, sanitizeAppearanceRig } from '../src/appearanceRig';
+import { resolveBodyPartPose } from '../src/appearanceRig';
+import { createGooglyEyePairPrimitive } from '../src/googlyEyes';
 import { getGooglyEyeState, parseGooglyEyePairMetrics, stepGooglyEye } from '../src/googlyEyes';
 import { bodyFingerprint, createCreaturePackage } from '../src/creaturePackages';
 import { CREATURE_TEMPLATES } from '../src/templates';
@@ -71,9 +74,85 @@ const leftState = getGooglyEyeState('smoke', googly.id, 'L');
 stepGooglyEye(leftState, 2.5, -1.2, metrics.domeRadius, metrics.pupilRadius);
 assert.ok(Math.hypot(leftState.px, leftState.py) > 0.01, 'googly pupil should slosh under anchor motion');
 
-assert.ok(BODY_PART_CATALOG.length >= 100, 'body part library should include monster + modular PNGs');
-const sample = createBodyPartPrimitive(BODY_PART_CATALOG[0]!.id, 0);
-assert.equal(sample.kind, 'bodyPart');
-assert.ok(sanitizeAppearanceRig({ version: 1, hideSkeleton: false, primitives: [sample] }).primitives[0].assetId);
+function countBodyPartPngs(dir: string): number {
+  let count = 0;
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) count += countBodyPartPngs(fullPath);
+    else if (entry.toLowerCase().endsWith('.png')) count += 1;
+  }
+  return count;
+}
+assert.ok(
+  countBodyPartPngs(join('src', 'assets', 'bodyParts')) >= 190,
+  'body part library should include monster, modular, and animal PNGs'
+);
+const sample = sanitizeAppearanceRig({
+  version: 1,
+  hideSkeleton: false,
+  primitives: [{
+    id: 'smoke-body-part',
+    kind: 'bodyPart',
+    assetId: 'monster:leg_blueA',
+    anchorNode: 0,
+    layer: 'front',
+    z: 105,
+    fill: '#ffffff',
+    stroke: '#64748b',
+    opacity: 1,
+    points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0 }],
+  }],
+}).primitives[0];
+assert.equal(sample?.kind, 'bodyPart');
+assert.ok(sample?.assetId);
 
-console.log('smoke-appearance-rig: PASS (solid parts, googly eyes, body part library, persistence invariance)');
+const horizontalBone = {
+  nodes: [{ x: 0, y: 0, radius: 10 }, { x: 100, y: 0, radius: 10 }],
+  muscles: [{ nodeA: 0, nodeB: 1 }],
+};
+const alignedLeg = {
+  id: 'smoke-leg',
+  kind: 'bodyPart' as const,
+  assetId: 'monster:leg_blueA',
+  anchorMuscle: 0,
+  boneAlign: true,
+  boneStretch: true,
+  boneRestLength: 100,
+  layer: 'front' as const,
+  z: 105,
+  fill: '#ffffff',
+  stroke: '#64748b',
+  opacity: 1,
+  points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0 }],
+};
+assert.equal(alignedLeg.boneAlign, true, 'link-anchored parts follow the bone by default');
+assert.equal(alignedLeg.boneStretch, true, 'limbs default to stretch-between-nodes');
+const alignedPose = resolveBodyPartPose(alignedLeg, horizontalBone, 64);
+assert.ok(alignedPose, 'bone-aligned pose resolves');
+assert.ok(Math.abs(alignedPose!.x) < 1, 'stretch anchor sits at proximal node');
+assert.ok(Math.abs(alignedPose!.y) < 1, 'stretch anchor sits on the link line');
+assert.ok(Math.abs(alignedPose!.rotation + Math.PI / 2) < 0.01, 'leg art aligns with horizontal bone');
+
+const shortBone = {
+  nodes: [{ x: 0, y: 0, radius: 10 }, { x: 50, y: 0, radius: 10 }],
+  muscles: [{ nodeA: 0, nodeB: 1 }],
+};
+const shortPose = resolveBodyPartPose(alignedLeg, shortBone, 64);
+assert.ok(shortPose && shortPose.scaleX < alignedPose!.scaleX, 'stretch scale shrinks with shorter bone');
+
+const parallelOnly = {
+  ...alignedLeg,
+  id: 'smoke-arm',
+  assetId: 'monster:arm_blueA',
+  boneStretch: undefined,
+  boneRestLength: undefined,
+  points: [{ x: 0.5, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0 }],
+};
+const parallelPose = resolveBodyPartPose(parallelOnly, horizontalBone, 64);
+assert.ok(parallelPose && Math.abs(parallelPose.x - 50) < 1, 'parallel mode anchors at link midpoint');
+assert.ok(
+  parallelPose && Math.abs(parallelPose.rotation + Math.PI / 2) < 0.01,
+  'parallel mode rotates with the link'
+);
+
+console.log('smoke-appearance-rig: PASS (solid parts, googly eyes, body part library, bone lock, persistence invariance)');
