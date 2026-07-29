@@ -1,11 +1,31 @@
 import { AppearancePrimitive, AppearanceRig } from './creaturePackages';
+import {
+  createGooglyEyePairPrimitive,
+  drawGooglyEyePair,
+} from './googlyEyes';
+import { drawBodyPart } from './bodyPartRender';
+import { preloadAllBodyPartImages } from './bodyPartImages';
 import { CreatureBlueprint } from './types';
+
+export { createGooglyEyePairPrimitive, createGooglyEyePairPrimitive as createGooglyEyePrimitive };
+export { createBodyPartPrimitive } from './bodyPartRender';
+
+preloadAllBodyPartImages();
 
 export type BiologicalPreset = 'leaf' | 'fox' | 'ocean' | 'plum';
 
 export interface AppearanceSkeleton {
-  nodes: Array<{ x: number; y: number; radius: number; id?: number }>;
+  nodes: Array<{
+    x: number;
+    y: number;
+    radius: number;
+    id?: number;
+    oldX?: number;
+    oldY?: number;
+  }>;
   muscles: Array<{ nodeA: number; nodeB: number }>;
+  /** Optional stable key for per-creature cosmetic sim state (arena creatures). */
+  id?: string;
 }
 
 export function sanitizeAppearanceRig(value: unknown): AppearanceRig {
@@ -16,6 +36,8 @@ export function sanitizeAppearanceRig(value: unknown): AppearanceRig {
     'polygon',
     'stroke',
     'eye',
+    'googlyEye',
+    'bodyPart',
     'fin',
     'ear',
     'tail',
@@ -31,6 +53,7 @@ export function sanitizeAppearanceRig(value: unknown): AppearanceRig {
         ...part,
         z: Number.isFinite(part.z) ? part.z : 0,
         opacity: Math.max(0, Math.min(1, Number.isFinite(part.opacity) ? part.opacity : 1)),
+        assetId: typeof part.assetId === 'string' ? part.assetId : undefined,
       }))
     : [];
   return { version: 1, hideSkeleton: !!rig?.hideSkeleton, primitives };
@@ -263,7 +286,7 @@ export function deformRigPoint(
   return total > 0 ? { x: x / total, y: y / total } : { x: point.x, y: point.y };
 }
 
-function pointForPart(
+export function pointForPart(
   part: AppearancePrimitive,
   point: AppearancePrimitive['points'][number],
   creature: AppearanceSkeleton
@@ -354,6 +377,13 @@ export function drawAppearance(
         ctx.fillStyle = '#111827';
         ctx.fill();
       }
+    } else if (part.kind === 'googlyEye' && part.anchorNode !== undefined) {
+      const anchor = creature.nodes[part.anchorNode];
+      if (anchor) {
+        drawGooglyEyePair(ctx, part, anchor, creature.id ?? 'studio');
+      }
+    } else if (part.kind === 'bodyPart' && part.assetId) {
+      drawBodyPart(ctx, part, creature, opacity);
     } else if (part.points.length > 1) {
       const points = part.points.map(point => pointForPart(part, point, creature));
       ctx.beginPath();

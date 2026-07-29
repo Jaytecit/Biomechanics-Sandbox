@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { createBiologicalPreset, deformRigPoint, sanitizeAppearanceRig } from '../src/appearance';
+import { createBiologicalPreset, createBodyPartPrimitive, createGooglyEyePairPrimitive, deformRigPoint, sanitizeAppearanceRig } from '../src/appearance';
+import { BODY_PART_CATALOG } from '../src/bodyPartCatalog';
+import { getGooglyEyeState, parseGooglyEyePairMetrics, stepGooglyEye } from '../src/googlyEyes';
 import { bodyFingerprint, createCreaturePackage } from '../src/creaturePackages';
 import { CREATURE_TEMPLATES } from '../src/templates';
 import { createBaseGenome } from '../src/neat';
@@ -57,4 +59,21 @@ const blendedSheetPoint = {
 const blended = deformRigPoint(blendedSheetPoint, creature);
 assert.ok(Number.isFinite(blended.x) && Number.isFinite(blended.y), 'multi-link sheet point deforms finitely');
 assert.deepEqual(creature.blueprint, blueprint, 'renderer rig does not mutate mechanics');
-console.log('smoke-appearance-rig: PASS (solid parts, joint skin, blended sheets, persistence invariance)');
+
+const googly = createGooglyEyePairPrimitive(0, 10);
+assert.equal(googly.kind, 'googlyEye');
+assert.equal(googly.points[0]?.x, 0, 'pair is centred on the anchor node');
+assert.ok((googly.points[2]?.x ?? 0) > 0, 'pair exposes horizontal eye spacing');
+const metrics = parseGooglyEyePairMetrics(googly, 10);
+assert.ok(metrics.halfSpacing > metrics.domeRadius * 0.8, 'eyes sit side by side');
+assert.ok(sanitizeAppearanceRig({ version: 1, hideSkeleton: false, primitives: [googly] }).primitives[0].kind === 'googlyEye');
+const leftState = getGooglyEyeState('smoke', googly.id, 'L');
+stepGooglyEye(leftState, 2.5, -1.2, metrics.domeRadius, metrics.pupilRadius);
+assert.ok(Math.hypot(leftState.px, leftState.py) > 0.01, 'googly pupil should slosh under anchor motion');
+
+assert.ok(BODY_PART_CATALOG.length >= 100, 'body part library should include monster + modular PNGs');
+const sample = createBodyPartPrimitive(BODY_PART_CATALOG[0]!.id, 0);
+assert.equal(sample.kind, 'bodyPart');
+assert.ok(sanitizeAppearanceRig({ version: 1, hideSkeleton: false, primitives: [sample] }).primitives[0].assetId);
+
+console.log('smoke-appearance-rig: PASS (solid parts, googly eyes, body part library, persistence invariance)');

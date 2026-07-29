@@ -23,11 +23,15 @@ export type AppearancePrimitive = {
     | 'polygon'
     | 'stroke'
     | 'eye'
+    | 'googlyEye'
+    | 'bodyPart'
     | 'fin'
     | 'ear'
     | 'tail'
     | 'patch'
     | 'rigidPlate';
+  /** Catalog id for kind bodyPart (e.g. monster:leg_blueA). */
+  assetId?: string;
   anchorNode?: number;
   anchorMuscle?: number;
   /** Rigid lock group id for kind rigidPlate (D130). */

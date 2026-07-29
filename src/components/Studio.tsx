@@ -41,7 +41,15 @@ import {
   nextCreatureVersionName,
   saveStudioDraft,
 } from '../creaturePackages';
-import { BiologicalPreset, createBiologicalPreset, drawAppearance } from '../appearance';
+import { BiologicalPreset, createBiologicalPreset, createGooglyEyePairPrimitive, createBodyPartPrimitive, drawAppearance } from '../appearance';
+import {
+  BODY_PART_CATALOG,
+  BODY_PART_CATEGORIES,
+  BodyPartCategory,
+  BodyPartPack,
+  getBodyPartDef,
+} from '../bodyPartCatalog';
+import { bodyPartTransform } from '../bodyPartRender';
 import { CreatureLibraryPanel } from './CreatureLibraryPanel';
 import {
   MAX_SOLID_SEGMENTS,
@@ -249,7 +257,7 @@ interface StudioMuscle {
   aeroArea?: number;
 }
 
-type SkinLibraryPart = 'joint' | 'sleeve' | 'torso' | 'ear' | 'fin' | 'tail';
+type SkinLibraryPart = 'joint' | 'sleeve' | 'googlyEye';
 type SkinAnchor =
   | { type: 'node'; index: number; id: number }
   | { type: 'muscle'; index: number; id: number };
@@ -308,7 +316,7 @@ export const Studio: React.FC<StudioProps> = ({
   const [selectedNodeIds, setSelectedNodeIds] = useState<number[]>([]);
   const [selectedMuscleId, setSelectedMuscleId] = useState<number | null>(null);
   const [editorMode, setEditorMode] = useState<
-    'select' | 'add_node' | 'add_muscle' | 'add_bone' | 'add_telescope' | 'add_piston' | 'paint' | 'skin_ellipse' | 'skin_sheet'
+    'select' | 'add_node' | 'add_muscle' | 'add_bone' | 'add_telescope' | 'add_piston' | 'paint'
   >('select');
   const [linkFromNodeId, setLinkFromNodeId] = useState<number | null>(null);
   const [linkCursor, setLinkCursor] = useState<{ x: number; y: number } | null>(null);
@@ -324,17 +332,12 @@ export const Studio: React.FC<StudioProps> = ({
   const isDraggingRef = useRef<boolean>(false);
   const dragNodeIdRef = useRef<number | null>(null);
   const isPaintingRef = useRef<boolean>(false);
-  const activeSkinPrimitiveIdRef = useRef<string | null>(null);
-  const lastSkinCursorRef = useRef<{ x: number; y: number } | null>(null);
-  const skinEllipseStartRef = useRef<{
-    x: number;
-    y: number;
-    anchor: SkinAnchor;
-  } | null>(null);
   const physicsOldRef = useRef<Map<number, { oldX: number; oldY: number }>>(new Map());
   const [skinFill, setSkinFill] = useState('#84cc16');
   const [skinOutline, setSkinOutline] = useState('#365314');
   const [skinLayer, setSkinLayer] = useState<'behind' | 'front'>('front');
+  const [bodyPartPackFilter, setBodyPartPackFilter] = useState<'all' | BodyPartPack>('all');
+  const [bodyPartCategoryFilter, setBodyPartCategoryFilter] = useState<'all' | BodyPartCategory>('all');
   const [selectedSkinPreset, setSelectedSkinPreset] = useState<BiologicalPreset | null>('leaf');
   const [selectedSkinPartId, setSelectedSkinPartId] = useState<string | null>(null);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
@@ -434,50 +437,6 @@ export const Studio: React.FC<StudioProps> = ({
     setSelectedNodeId(null);
   };
 
-  const skinPointAt = (
-    relativeX: number,
-    relativeY: number
-  ): AppearancePrimitive['points'][number] | null => {
-    const candidates: Array<{
-      muscleIndex: number;
-      distance: number;
-      along: number;
-      offset: number;
-    }> = [];
-    muscles.forEach((muscle, muscleIndex) => {
-      const a = nodes.find(node => node.id === muscle.nodeA);
-      const b = nodes.find(node => node.id === muscle.nodeB);
-      if (!a || !b) return;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const lengthSquared = dx * dx + dy * dy;
-      const length = Math.sqrt(lengthSquared);
-      if (length < 1) return;
-      const along = ((relativeX - a.x) * dx + (relativeY - a.y) * dy) / lengthSquared;
-      const projectedX = a.x + along * dx;
-      const projectedY = a.y + along * dy;
-      const distance = Math.hypot(relativeX - projectedX, relativeY - projectedY);
-      const offset = (-(relativeX - a.x) * dy + (relativeY - a.y) * dx) / length;
-      candidates.push({ muscleIndex, distance, along, offset });
-    });
-
-    candidates.sort((a, b) => a.distance - b.distance);
-    const nearest = candidates.slice(0, 2);
-    if (nearest.length === 0) return null;
-    const rawWeights = nearest.map(candidate => 1 / Math.max(4, candidate.distance));
-    const weightTotal = rawWeights.reduce((sum, weight) => sum + weight, 0);
-    return {
-      x: nearest[0].along,
-      y: nearest[0].offset,
-      weights: nearest.map((candidate, index) => ({
-        muscle: candidate.muscleIndex,
-        weight: rawWeights[index] / weightTotal,
-        x: candidate.along,
-        y: candidate.offset,
-      })),
-    };
-  };
-
   const muscleLocalAt = (muscleIndex: number, relativeX: number, relativeY: number) => {
     const muscle = muscles[muscleIndex];
     const a = muscle && nodes.find(node => node.id === muscle.nodeA);
@@ -507,43 +466,14 @@ export const Studio: React.FC<StudioProps> = ({
     return null;
   };
 
-  const nearestSkinAnchor = (relativeX: number, relativeY: number): SkinAnchor | null => {
-    let bestNode: { index: number; id: number; distance: number } | null = null;
-    nodes.forEach((node, index) => {
-      const distance = Math.hypot(relativeX - node.x, relativeY - node.y);
-      if (!bestNode || distance < bestNode.distance) {
-        bestNode = { index, id: node.id, distance };
-      }
-    });
-    let bestMuscle: { index: number; id: number; distance: number } | null = null;
-    muscles.forEach((muscle, index) => {
-      const local = muscleLocalAt(index, relativeX, relativeY);
-      if (!local) return;
-      const along = Math.max(0, Math.min(1, local.along));
-      const a = nodes.find(node => node.id === muscle.nodeA)!;
-      const b = nodes.find(node => node.id === muscle.nodeB)!;
-      const px = a.x + (b.x - a.x) * along;
-      const py = a.y + (b.y - a.y) * along;
-      const distance = Math.hypot(relativeX - px, relativeY - py);
-      if (!bestMuscle || distance < bestMuscle.distance) {
-        bestMuscle = { index, id: muscle.id, distance };
-      }
-    });
-    if (!bestNode) {
-      return bestMuscle
-        ? { type: 'muscle', index: bestMuscle.index, id: bestMuscle.id }
-        : null;
-    }
-    if (!bestMuscle || bestNode.distance <= bestMuscle.distance) {
-      return { type: 'node', index: bestNode.index, id: bestNode.id };
-    }
-    return { type: 'muscle', index: bestMuscle.index, id: bestMuscle.id };
-  };
-
   const addSkinLibraryPart = (kind: SkinLibraryPart) => {
     const anchor = selectedSkinAnchor();
     if (!anchor) {
       alert('Select a node or muscle first, then choose a solid body part to attach.');
+      return;
+    }
+    if (kind === 'googlyEye' && anchor.type !== 'node') {
+      alert('Googly eyes attach to a node (centre of the head). Select a node first.');
       return;
     }
     if (kind === 'joint' && anchor.type !== 'node') {
@@ -569,234 +499,103 @@ export const Studio: React.FC<StudioProps> = ({
     if (anchor.type === 'node') {
       const node = nodes[anchor.index];
       const radius = Math.max(10, node.radius);
-      const shapes: Record<Exclude<SkinLibraryPart, 'sleeve'>, AppearancePrimitive> = {
-        joint: {
+      if (kind === 'googlyEye') {
+        part = createGooglyEyePairPrimitive(anchor.index, radius);
+        part.layer = skinLayer;
+        part.z = skinLayer === 'front' ? 112 : 28;
+        part.stroke = skinOutline;
+      } else {
+        part = {
           ...base,
           kind: 'ellipse',
           anchorNode: anchor.index,
           points: [{ x: 0, y: 0 }, { x: radius * 1.45, y: radius * 1.3 }],
-        },
-        torso: {
-          ...base,
-          kind: 'ellipse',
-          anchorNode: anchor.index,
-          points: [{ x: 0, y: 0 }, { x: radius * 2.3, y: radius * 1.65 }],
-        },
-        ear: {
-          ...base,
-          kind: 'ear',
-          anchorNode: anchor.index,
-          points: [{ x: -radius * 0.7, y: 0 }, { x: 0, y: -radius * 2.2 }, { x: radius * 0.7, y: 0 }],
-        },
-        fin: {
-          ...base,
-          kind: 'fin',
-          anchorNode: anchor.index,
-          points: [{ x: -radius, y: 0 }, { x: 0, y: -radius * 2 }, { x: radius, y: 0 }, { x: 0, y: radius * 0.6 }],
-        },
-        tail: {
-          ...base,
-          kind: 'tail',
-          anchorNode: anchor.index,
-          points: [
-            { x: 0, y: -radius * 0.55 },
-            { x: radius * 2.8, y: -radius },
-            { x: radius * 4, y: 0 },
-            { x: radius * 2.8, y: radius },
-            { x: 0, y: radius * 0.55 },
-          ],
-        },
-      };
-      part = shapes[kind as Exclude<SkinLibraryPart, 'sleeve'>];
+        };
+      }
     } else {
       const local = muscleLocalAt(anchor.index, 0, 0);
       const muscle = muscles[anchor.index];
       const a = nodes.find(node => node.id === muscle.nodeA)!;
       const b = nodes.find(node => node.id === muscle.nodeB)!;
-      const length = local?.length ?? Math.hypot(b.x - a.x, b.y - a.y);
       const width = Math.max(13, Math.min(a.radius, b.radius) * 1.8);
-      const shapes: Record<Exclude<SkinLibraryPart, 'joint'>, AppearancePrimitive> = {
-        sleeve: {
-          ...base,
-          kind: 'capsule',
-          anchorMuscle: anchor.index,
-          points: [{ x: 0, y: 0 }, { x: 1, y: width }],
-        },
-        torso: {
-          ...base,
-          kind: 'ellipse',
-          anchorMuscle: anchor.index,
-          points: [{ x: 0.5, y: 0 }, { x: length * 0.38, y: width * 1.25 }],
-        },
-        ear: {
-          ...base,
-          kind: 'ear',
-          anchorMuscle: anchor.index,
-          points: [{ x: 0.18, y: 0 }, { x: 0.35, y: -width * 1.8 }, { x: 0.5, y: 0 }],
-        },
-        fin: {
-          ...base,
-          kind: 'fin',
-          anchorMuscle: anchor.index,
-          points: [{ x: 0.15, y: 0 }, { x: 0.5, y: -width * 1.9 }, { x: 0.85, y: 0 }],
-        },
-        tail: {
-          ...base,
-          kind: 'tail',
-          anchorMuscle: anchor.index,
-          points: [
-            { x: 0.72, y: -width * 0.35 },
-            { x: 1.25, y: -width },
-            { x: 1.7, y: 0 },
-            { x: 1.25, y: width },
-            { x: 0.72, y: width * 0.35 },
-          ],
-        },
+      part = {
+        ...base,
+        kind: 'capsule',
+        anchorMuscle: anchor.index,
+        points: [{ x: 0, y: 0 }, { x: 1, y: width }],
       };
-      part = shapes[kind as Exclude<SkinLibraryPart, 'joint'>];
     }
     setSelectedSkinPreset(null);
     setSelectedSkinPartId(id);
     setAppearance(current => ({ ...current, primitives: [...current.primitives, part] }));
   };
 
-  const beginSkinSheet = (relativeX: number, relativeY: number) => {
-    const point = skinPointAt(relativeX, relativeY);
-    if (!point) return;
-    const id = `skin-sheet-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    activeSkinPrimitiveIdRef.current = id;
-    lastSkinCursorRef.current = { x: relativeX, y: relativeY };
-    setSelectedSkinPreset(null);
-    setSelectedSkinPartId(id);
-    setAppearance(current => ({
-      ...current,
-      primitives: [
-        ...current.primitives,
-        {
-          id,
-          kind: 'patch',
-          layer: skinLayer,
-          z: skinLayer === 'front' ? 80 : 20,
-          fill: skinFill,
-          stroke: skinOutline,
-          opacity: 0.96,
-          points: [point],
-        },
-      ],
-    }));
-  };
-
-  const continueSkinSheet = (relativeX: number, relativeY: number) => {
-    const id = activeSkinPrimitiveIdRef.current;
-    const last = lastSkinCursorRef.current;
-    if (!id || (last && Math.hypot(relativeX - last.x, relativeY - last.y) < 7)) return;
-    const point = skinPointAt(relativeX, relativeY);
-    if (!point) return;
-    lastSkinCursorRef.current = { x: relativeX, y: relativeY };
-    setAppearance(current => ({
-      ...current,
-      primitives: current.primitives.map(part =>
-        part.id === id ? { ...part, points: [...part.points, point] } : part
-      ),
-    }));
-  };
-
-  const beginSkinEllipse = (relativeX: number, relativeY: number) => {
-    const anchor = selectedSkinAnchor() ?? nearestSkinAnchor(relativeX, relativeY);
-    if (!anchor) return;
-    if (anchor.type === 'node') {
-      setSelectedNodeId(anchor.id);
-      setSelectedMuscleId(null);
-    } else {
-      setSelectedMuscleId(anchor.id);
-      setSelectedNodeId(null);
+  const addBodyPartFromCatalog = (assetId: string) => {
+    const def = getBodyPartDef(assetId);
+    const anchor = selectedSkinAnchor();
+    if (!def) return;
+    if (!anchor) {
+      alert('Select a node or link first, then pick a body part from the library.');
+      return;
     }
-    const id = `skin-ellipse-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    activeSkinPrimitiveIdRef.current = id;
-    skinEllipseStartRef.current = { x: relativeX, y: relativeY, anchor };
+    if (def.anchorHint === 'node' && anchor.type !== 'node') {
+      alert(`${def.label} attaches to a node. Select a node first.`);
+      return;
+    }
+    if (def.anchorHint === 'muscle' && anchor.type !== 'muscle') {
+      alert(`${def.label} attaches to a link. Select a muscle or bone first.`);
+      return;
+    }
+
+    const part = createBodyPartPrimitive(
+      assetId,
+      anchor.type === 'node' ? anchor.index : undefined,
+      anchor.type === 'muscle' ? anchor.index : undefined
+    );
+    part.layer = skinLayer;
+    part.z = skinLayer === 'front' ? 105 : 22;
+    if (anchor.type === 'muscle') {
+      part.points[0] = { x: 0, y: 0 };
+      part.points[1] = { x: def.defaultScale, y: def.defaultScale };
+    }
     setSelectedSkinPreset(null);
-    setSelectedSkinPartId(id);
-    const center = anchor.type === 'node'
-      ? {
-          x: relativeX - nodes[anchor.index].x,
-          y: relativeY - nodes[anchor.index].y,
+    setSelectedSkinPartId(part.id);
+    setAppearance(current => ({ ...current, primitives: [...current.primitives, part] }));
+  };
+
+  const updateSelectedBodyPart = (patch: Partial<{
+    offsetX: number;
+    offsetY: number;
+    scale: number;
+    rotationDeg: number;
+    mirror: boolean;
+  }>) => {
+    if (!selectedSkinPartId) return;
+    setAppearance(current => ({
+      ...current,
+      primitives: current.primitives.map(part => {
+        if (part.id !== selectedSkinPartId || part.kind !== 'bodyPart') return part;
+        const t = bodyPartTransform(part);
+        const next = { ...part, points: part.points.map(p => ({ ...p })) };
+        if (patch.offsetX !== undefined) next.points[0] = { ...next.points[0], x: patch.offsetX };
+        if (patch.offsetY !== undefined) next.points[0] = { ...next.points[0], y: patch.offsetY };
+        if (patch.scale !== undefined) {
+          next.points[1] = { x: patch.scale, y: patch.scale };
         }
-      : (() => {
-          const local = muscleLocalAt(anchor.index, relativeX, relativeY)!;
-          return { x: local.along, y: local.offset };
-        })();
-    setAppearance(current => ({
-      ...current,
-      primitives: [...current.primitives, {
-        id,
-        kind: 'ellipse',
-        anchorNode: anchor.type === 'node' ? anchor.index : undefined,
-        anchorMuscle: anchor.type === 'muscle' ? anchor.index : undefined,
-        layer: skinLayer,
-        z: skinLayer === 'front' ? 78 : 18,
-        fill: skinFill,
-        stroke: skinOutline,
-        opacity: 0.96,
-        points: [center, { x: 2, y: 2 }],
-      }],
+        if (patch.rotationDeg !== undefined) {
+          next.points[2] = { x: (patch.rotationDeg * Math.PI) / 180, y: 0 };
+        }
+        if (patch.mirror !== undefined) next.mirror = patch.mirror;
+        return next;
+      }),
     }));
   };
 
-  const continueSkinEllipse = (relativeX: number, relativeY: number) => {
-    const id = activeSkinPrimitiveIdRef.current;
-    const start = skinEllipseStartRef.current;
-    if (!id || !start) return;
-    let center: { x: number; y: number };
-    let size: { x: number; y: number };
-    if (start.anchor.type === 'node') {
-      const node = nodes[start.anchor.index];
-      const startX = start.x - node.x;
-      const startY = start.y - node.y;
-      const currentX = relativeX - node.x;
-      const currentY = relativeY - node.y;
-      center = { x: (startX + currentX) / 2, y: (startY + currentY) / 2 };
-      size = { x: Math.abs(currentX - startX) / 2, y: Math.abs(currentY - startY) / 2 };
-    } else {
-      const startLocal = muscleLocalAt(start.anchor.index, start.x, start.y);
-      const currentLocal = muscleLocalAt(start.anchor.index, relativeX, relativeY);
-      if (!startLocal || !currentLocal) return;
-      center = {
-        x: (startLocal.along + currentLocal.along) / 2,
-        y: (startLocal.offset + currentLocal.offset) / 2,
-      };
-      size = {
-        x: Math.abs(currentLocal.along - startLocal.along) * startLocal.length / 2,
-        y: Math.abs(currentLocal.offset - startLocal.offset) / 2,
-      };
-    }
-    setAppearance(current => ({
-      ...current,
-      primitives: current.primitives.map(part =>
-        part.id === id ? { ...part, points: [center, size] } : part
-      ),
-    }));
-  };
-
-  const finishSkinPrimitive = () => {
-    const id = activeSkinPrimitiveIdRef.current;
-    if (id) {
-      setAppearance(current => ({
-        ...current,
-        primitives: current.primitives.filter(part => {
-          if (part.id !== id) return true;
-          if (part.kind === 'patch') return part.points.length >= 3;
-          if (part.kind === 'ellipse') {
-            const size = part.points[1];
-            return !!size && Math.abs(size.x) >= 3 && Math.abs(size.y) >= 3;
-          }
-          return true;
-        }),
-      }));
-    }
-    activeSkinPrimitiveIdRef.current = null;
-    lastSkinCursorRef.current = null;
-    skinEllipseStartRef.current = null;
-  };
+  const filteredBodyParts = BODY_PART_CATALOG.filter(part => {
+    if (bodyPartPackFilter !== 'all' && part.pack !== bodyPartPackFilter) return false;
+    if (bodyPartCategoryFilter !== 'all' && part.category !== bodyPartCategoryFilter) return false;
+    return true;
+  });
 
   // Cycle muscle ↔ bone ↔ telescope ↔ piston
   const toggleMuscleRigidity = (muscleId: number) => {
@@ -1459,12 +1258,17 @@ export const Studio: React.FC<StudioProps> = ({
 
     const nodeIndexById = new Map(nodes.map((node, index) => [node.id, index]));
     const appearanceSkeleton = {
-      nodes: nodes.map(node => ({
-        x: centerX + node.x,
-        y: centerY + node.y,
-        radius: node.radius,
-        id: node.id,
-      })),
+      id: 'studio-preview',
+      nodes: nodes.map(node => {
+        const old = physicsOldRef.current.get(node.id);
+        return {
+          x: centerX + node.x,
+          y: centerY + node.y,
+          radius: node.radius,
+          id: node.id,
+          ...(old ? { oldX: centerX + old.oldX, oldY: centerY + old.oldY } : {}),
+        };
+      }),
       muscles: muscles.map(muscle => ({
         nodeA: nodeIndexById.get(muscle.nodeA) ?? -1,
         nodeB: nodeIndexById.get(muscle.nodeB) ?? -1,
@@ -1827,11 +1631,7 @@ export const Studio: React.FC<StudioProps> = ({
   // Handle click on canvas
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     event.preventDefault();
-    if (
-      editorMode === 'paint' ||
-      editorMode === 'skin_ellipse' ||
-      editorMode === 'skin_sheet'
-    ) return; // drawing tools are drag-driven
+    if (editorMode === 'paint') return;
     // Muscle/bone/telescope linking is drag-driven (mousedown → mouseup)
     if (editorMode === 'add_muscle' || editorMode === 'add_bone' || editorMode === 'add_telescope' || editorMode === 'add_piston') return;
 
@@ -2095,16 +1895,6 @@ export const Studio: React.FC<StudioProps> = ({
 
     const { x: relativeX, y: relativeY } = clientToCanvas(event.clientX, event.clientY);
 
-    if (editorMode === 'skin_sheet') {
-      beginSkinSheet(relativeX, relativeY);
-      return;
-    }
-
-    if (editorMode === 'skin_ellipse') {
-      beginSkinEllipse(relativeX, relativeY);
-      return;
-    }
-
     if (editorMode === 'paint') {
       isPaintingRef.current = true;
       paintMuscleAtPoint(relativeX, relativeY);
@@ -2156,16 +1946,6 @@ export const Studio: React.FC<StudioProps> = ({
 
     if (editorMode === 'paint' && isPaintingRef.current) {
       paintMuscleAtPoint(relativeX, relativeY);
-      return;
-    }
-
-    if (editorMode === 'skin_sheet' && activeSkinPrimitiveIdRef.current) {
-      continueSkinSheet(relativeX, relativeY);
-      return;
-    }
-
-    if (editorMode === 'skin_ellipse' && activeSkinPrimitiveIdRef.current) {
-      continueSkinEllipse(relativeX, relativeY);
       return;
     }
 
@@ -2267,7 +2047,6 @@ export const Studio: React.FC<StudioProps> = ({
 
     setLinkFromNodeId(null);
     setLinkCursor(null);
-    finishSkinPrimitive();
     isDraggingRef.current = false;
     dragNodeIdRef.current = null;
     isPaintingRef.current = false;
@@ -2866,15 +2645,12 @@ export const Studio: React.FC<StudioProps> = ({
 
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-              Attach part
+              Quick attach
             </span>
             {[
               ['Joint pad', 'joint'],
               ['Limb sleeve', 'sleeve'],
-              ['Torso', 'torso'],
-              ['Ear', 'ear'],
-              ['Fin', 'fin'],
-              ['Tail', 'tail'],
+              ['Googly eyes', 'googlyEye'],
             ].map(([label, kind]) => (
               <button
                 key={kind}
@@ -2885,67 +2661,10 @@ export const Studio: React.FC<StudioProps> = ({
                 {label}
               </button>
             ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="mr-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-              Draw filled skin
-            </span>
-            <button
-              type="button"
-              aria-pressed={editorMode === 'skin_ellipse'}
-              className={`rounded border px-2 py-1 text-[11px] font-bold ${
-                editorMode === 'skin_ellipse'
-                  ? 'border-violet-600 bg-violet-600 text-white ring-2 ring-violet-300'
-                  : 'border-violet-200 bg-white text-violet-800 hover:bg-violet-50'
-              }`}
-              onClick={() => {
-                setEditorMode('skin_ellipse');
-                resetToolSources();
-              }}
-            >
-              Filled ellipse
-            </button>
-            <button
-              type="button"
-              aria-pressed={editorMode === 'skin_sheet'}
-              className={`rounded border px-2 py-1 text-[11px] font-bold ${
-                editorMode === 'skin_sheet'
-                  ? 'border-violet-600 bg-violet-600 text-white ring-2 ring-violet-300'
-                  : 'border-violet-200 bg-white text-violet-800 hover:bg-violet-50'
-              }`}
-              onClick={() => {
-                setEditorMode('skin_sheet');
-                resetToolSources();
-              }}
-            >
-              <Paintbrush className="mr-1 inline h-3 w-3" />
-              Whole-body sheet
-            </button>
-            <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700">
-              Fill
-              <input
-                type="color"
-                aria-label="Skin fill colour"
-                value={skinFill}
-                onChange={event => setSkinFill(event.target.value)}
-                className="h-5 w-6 cursor-pointer border-0 bg-transparent p-0"
-              />
-            </label>
-            <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700">
-              Outline
-              <input
-                type="color"
-                aria-label="Skin outline colour"
-                value={skinOutline}
-                onChange={event => setSkinOutline(event.target.value)}
-                className="h-5 w-6 cursor-pointer border-0 bg-transparent p-0"
-              />
-            </label>
-            <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700">
+            <label className="ml-auto flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700">
               Layer
               <select
-                aria-label="Skin drawing layer"
+                aria-label="Body part layer"
                 value={skinLayer}
                 onChange={event => setSkinLayer(event.target.value as 'behind' | 'front')}
                 className="bg-transparent text-[11px] font-bold text-slate-700"
@@ -2955,6 +2674,160 @@ export const Studio: React.FC<StudioProps> = ({
               </select>
             </label>
           </div>
+
+          <div className="space-y-2 rounded-lg border border-lime-300 bg-white/80 p-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Body part library
+              </span>
+              <select
+                aria-label="Filter pack"
+                value={bodyPartPackFilter}
+                onChange={e => setBodyPartPackFilter(e.target.value as 'all' | BodyPartPack)}
+                className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold"
+              >
+                <option value="all">All packs</option>
+                <option value="monster">Monster</option>
+                <option value="modular">Human / shoes</option>
+              </select>
+              <select
+                aria-label="Filter category"
+                value={bodyPartCategoryFilter}
+                onChange={e =>
+                  setBodyPartCategoryFilter(e.target.value as 'all' | BodyPartCategory)
+                }
+                className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold"
+              >
+                <option value="all">All types</option>
+                {BODY_PART_CATEGORIES.map(cat => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[10px] text-slate-500">{filteredBodyParts.length} parts</span>
+            </div>
+            <div className="grid max-h-40 grid-cols-4 gap-1.5 overflow-y-auto sm:grid-cols-5">
+              {filteredBodyParts.map(part => (
+                <button
+                  key={part.id}
+                  type="button"
+                  title={part.label}
+                  onClick={() => addBodyPartFromCatalog(part.id)}
+                  className="flex flex-col items-center gap-0.5 rounded border border-slate-200 bg-slate-50 p-1 hover:border-indigo-400 hover:bg-indigo-50"
+                >
+                  <img
+                    src={part.url}
+                    alt=""
+                    className="h-10 w-10 object-contain"
+                    draggable={false}
+                  />
+                  <span className="line-clamp-2 w-full text-center text-[8px] font-semibold leading-tight text-slate-600">
+                    {part.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] leading-relaxed text-slate-500">
+              Select a node (face, foot) or link (limb), then click a part. Monster + human/shoe
+              packs ship with the project (Kenney CC0 — see assets/bodyParts/licenses/).
+            </p>
+          </div>
+
+          {selectedSkinPart?.kind === 'bodyPart' && (
+            <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/60 p-2">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-900">
+                Transform — {getBodyPartDef(selectedSkinPart.assetId)?.label ?? 'Part'}
+              </div>
+              {(() => {
+                const t = bodyPartTransform(selectedSkinPart);
+                const rotDeg = Math.round((t.rotation * 180) / Math.PI);
+                return (
+                  <>
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      Scale
+                      <input
+                        type="range"
+                        min={0.15}
+                        max={3}
+                        step={0.05}
+                        value={t.scaleX}
+                        onChange={e => updateSelectedBodyPart({ scale: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-600"
+                      />
+                      <span className="w-10 text-right font-mono text-[10px]">{t.scaleX.toFixed(2)}</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      Rotate
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        step={1}
+                        value={rotDeg}
+                        onChange={e => updateSelectedBodyPart({ rotationDeg: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-600"
+                      />
+                      <span className="w-10 text-right font-mono text-[10px]">{rotDeg}°</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      Offset X
+                      <input
+                        type="range"
+                        min={-80}
+                        max={80}
+                        step={1}
+                        value={t.offsetX}
+                        onChange={e => updateSelectedBodyPart({ offsetX: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-600"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      Offset Y
+                      <input
+                        type="range"
+                        min={-80}
+                        max={80}
+                        step={1}
+                        value={t.offsetY}
+                        onChange={e => updateSelectedBodyPart({ offsetY: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-600"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedSkinPart.mirror}
+                        onChange={e => updateSelectedBodyPart({ mirror: e.target.checked })}
+                      />
+                      Mirror (flip horizontally)
+                    </label>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          {appearance.primitives.length > 0 && (
+            <label className="flex flex-col gap-1 text-[11px] font-semibold text-slate-700">
+              Placed parts
+              <select
+                aria-label="Select placed appearance part"
+                value={selectedSkinPartId ?? ''}
+                onChange={e => setSelectedSkinPartId(e.target.value || null)}
+                className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px]"
+              >
+                <option value="">—</option>
+                {appearance.primitives.map(part => (
+                  <option key={part.id} value={part.id}>
+                    {part.kind === 'bodyPart'
+                      ? getBodyPartDef(part.assetId)?.label ?? part.assetId
+                      : `${part.kind} (${part.id.slice(-6)})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <div className="flex flex-wrap items-center gap-1.5 border-t border-lime-200 pt-2">
             <span className="text-[10px] text-slate-600">
@@ -3000,10 +2873,8 @@ export const Studio: React.FC<StudioProps> = ({
               Clear all skin
             </button>
             <span className="w-full text-[10px] leading-relaxed text-slate-500">
-              Parts are filled surfaces bound to the selected joint or link. Filled ellipses follow one
-              selected anchor. A whole-body sheet closes and fills the shape you trace, then blends each
-              control point across nearby links so the sheet stretches and distorts with the frame.
-              Skin remains renderer-only and does not change morphology or controllers.
+              Body parts are cosmetic only — they do not change physics or controllers. Use the
+              library above, then scale and rotate the selected part to fit your creature.
             </span>
           </div>
         </section>
@@ -3033,11 +2904,7 @@ export const Studio: React.FC<StudioProps> = ({
             }}
             onContextMenu={e => e.preventDefault()}
             className={`block w-full h-full touch-none ${
-              editorMode === 'paint' ||
-              editorMode === 'skin_ellipse' ||
-              editorMode === 'skin_sheet'
-                ? 'cursor-cell'
-                : 'cursor-crosshair'
+              editorMode === 'paint' ? 'cursor-cell' : 'cursor-crosshair'
             }`}
             id="studio-canvas"
           />
@@ -3099,8 +2966,6 @@ export const Studio: React.FC<StudioProps> = ({
             {editorMode === 'add_telescope' && 'Drag from one node to another to add a telescoping bone'}
             {editorMode === 'add_piston' && 'Drag from one node to another to add a rate-tunable piston bone'}
             {editorMode === 'paint' && 'Drag across muscles/bones to thicken'}
-            {editorMode === 'skin_ellipse' && 'Drag a filled ellipse around one selected node or link'}
-            {editorMode === 'skin_sheet' && 'Trace a closed whole-body sheet around the frame'}
             {snapToGridEnabled && (
               <span className="ml-2 text-slate-300">· Snap {STUDIO_GRID_SIZE}px</span>
             )}
