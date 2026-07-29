@@ -55,8 +55,6 @@ import {
   clampDifficulty,
   scaleW,
   scaleD,
-  LAND_CEILING_FLIGHT,
-  JUMP_LAND_MIN_HEIGHT,
   JUMP_LAND_RETURN_TOLERANCE,
   WALK_MAX_CONTACT_POINTS,
   WALK_STRIDE_MIN_PROGRESS,
@@ -68,6 +66,13 @@ import {
   HOP_CHAIN_GROUND_MAX,
   JUMP_MIN_CLEARANCE,
   JUMP_MIN_FRAMES,
+  measureNodeExtents,
+  flightRewardMinClearance,
+  jumpRewardMinClearance,
+  jumpLandMinHeight,
+  flightLandCeiling,
+  glideCorridorBand,
+  FLIGHT_MIN_CLEARANCE_FLOOR,
 } from './physicsConstants';
 import {
   buildGoalArena,
@@ -383,6 +388,8 @@ export function spawnCreature(
   startX = totalX / nodes.length;
   startY = totalY / nodes.length;
 
+  const restExtents = measureNodeExtents(nodes);
+
   const paraPilot =
     goal === EvolutionGoal.PARA_RAMP_GLIDE && hasParaglider({ muscles: blueprint.muscles })
       ? creature.paraPilot ?? createParaPilot(creature.genome, cloneGenome)
@@ -403,6 +410,8 @@ export function spawnCreature(
     solidBodies: solidBodies.length > 0 ? solidBodies : undefined,
     startX,
     startY,
+    restBodyHeight: restExtents.height,
+    restBodyWidth: restExtents.width,
     highestY: startY,
     currentX: startX,
     currentY: startY,
@@ -1880,12 +1889,15 @@ function flightHeightBoutScore(
   flapFrames: number,
   flapWork: number,
   symFrames = 0,
-  symQuality = 0
+  symQuality = 0,
+  minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
-  if (frames < 8 || peak < 8) return 0;
+  const excessPeak = flightExcessClearance(peak, minClear);
   const mean = integral / frames;
-  // Height only unlocks after a real airborne streak (not a 1-frame apex).
-  const sustainGate = Math.min(1, Math.max(0, frames - 18) / 72);
+  const excessMean = flightExcessClearance(mean, minClear);
+  // Height only unlocks after a real airborne streak above the body-scaled floor.
+  if (frames < 12 || excessPeak < 1) return 0;
+  const sustainGate = Math.min(1, Math.max(0, frames - 24) / 72);
   // Wing stroke evidence.
   const flapGate = Math.min(1, Math.max(0, flapFrames) / 28);
   // Paragliders rarely flap; a long uninterrupted glide still counts as aero work.
@@ -1895,23 +1907,25 @@ function flightHeightBoutScore(
   if (aeroEvidence < 0.08) return 0;
 
   const leapiness =
-    peak > 35 ? Math.max(0, peak / Math.max(12, mean) - 1.65) : 0;
+    excessPeak > minClear * 0.8
+      ? Math.max(0, peak / Math.max(minClear, mean) - 1.65)
+      : 0;
 
-  // Primary: mean cruise altitude while sustained — rewards getting and staying higher.
-  const cruise = Math.min(mean, 220) * 2.6 * sustainGate * aeroEvidence;
+  // Primary: mean cruise altitude above the flight floor while sustained.
+  const cruise = Math.min(excessMean, minClear * 2.5) * 2.6 * sustainGate * aeroEvidence;
   // Peak only pays when near the cruise band and gated by sustain + aero work.
-  const sustainedPeak = Math.min(peak, mean * 1.45 + 12);
+  const sustainedPeak = Math.min(excessPeak, excessMean * 1.45 + minClear * 0.15);
   const peakScore =
     sustainedPeak * 1.35 * sustainGate * (0.25 + 0.75 * aeroEvidence);
   // Post-takeoff aero climb: COM rise while wings are actively flapping.
   const climbScore =
-    Math.min(160, Math.max(0, poweredClimb)) *
+    Math.min(minClear * 1.5, Math.max(0, poweredClimb)) *
     2.1 *
     (0.3 + 0.7 * flapGate);
   // Weak raw climb-from-takeoff shaping, still flap-gated so hops cannot farm it.
   const rawClimb = Math.max(0, peak - Math.max(0, takeoffClear));
   const climbShaping =
-    Math.min(120, rawClimb) * 0.35 * sustainGate * flapGate;
+    Math.min(minClear * 1.2, rawClimb) * 0.35 * sustainGate * flapGate;
   const flapBonus =
     Math.min(80, Math.max(0, flapFrames)) * 0.25 +
     Math.min(120, Math.max(0, flapWork)) * 0.05;
@@ -1919,7 +1933,7 @@ function flightHeightBoutScore(
   const symBonus =
     Math.min(110, Math.max(0, symFrames)) * 0.55 +
     Math.min(160, Math.max(0, symQuality)) * 0.45;
-  const leapPenalty = leapiness * peak * 0.55;
+  const leapPenalty = leapiness * excessPeak * 0.55;
 
   return Math.max(
     0,
@@ -1947,7 +1961,8 @@ function activeFlightHeightBoutFitness(creature: Creature): number {
     Math.max(0, (creature.wingFlapFrames ?? 0) - flapBase),
     Math.max(0, (creature.wingFlapWork ?? 0) - workBase),
     Math.max(0, (creature.wingSymFlapFrames ?? 0) - symBase),
-    Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase)
+    Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase),
+    creatureFlightMinClearance(creature)
   );
 }
 
@@ -1973,26 +1988,30 @@ function resetFlightHeightBout(creature: Creature): void {
 
 /** Rightward airborne travel. */
 function flightRightFitness(creature: Creature): number {
+  const minClear = creatureFlightMinClearance(creature);
   return Math.max(
     creature.flightRightBestBoutScore ?? 0,
     directionalBoutScore(
       creature.attemptBoutRight ?? 0,
       creature.attemptBoutFrames ?? 0,
       true,
-      creature.attemptBoutPeakClearance ?? 0
+      creature.attemptBoutPeakClearance ?? 0,
+      minClear
     )
   );
 }
 
 /** Leftward airborne travel. */
 function flightLeftFitness(creature: Creature): number {
+  const minClear = creatureFlightMinClearance(creature);
   return Math.max(
     creature.flightLeftBestBoutScore ?? 0,
     directionalBoutScore(
       creature.attemptBoutLeft ?? 0,
       creature.attemptBoutFrames ?? 0,
       true,
-      creature.attemptBoutPeakClearance ?? 0
+      creature.attemptBoutPeakClearance ?? 0,
+      minClear
     )
   );
 }
@@ -2002,9 +2021,10 @@ function flightAirspeedBoutScore(
   peak: number,
   frames: number,
   dist: number,
-  clearance: number
+  clearance: number,
+  minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
-  if (frames < 3 || clearance < 6) return 0;
+  if (frames < 8 || clearance < minClear) return 0;
   return peak * 55 + Math.min(frames, 160) * 0.4 + dist * 0.12;
 }
 
@@ -2013,7 +2033,8 @@ function activeFlightAirspeedBoutFitness(creature: Creature): number {
     creature.flightAirspeedBoutPeak ?? 0,
     creature.flightAirspeedBoutFrames ?? 0,
     creature.flightAirspeedBoutDist ?? 0,
-    creature.flightAirspeedBoutPeakClearance ?? 0
+    creature.flightAirspeedBoutPeakClearance ?? 0,
+    creatureFlightMinClearance(creature)
   );
 }
 
@@ -2055,7 +2076,8 @@ function flightAcrobaticsFitness(creature: Creature): number {
       creature.attemptBoutRotation ?? 0,
       creature.attemptBoutFrames ?? 0,
       creature.attemptBoutPeakClearance ?? 0,
-      true
+      true,
+      creatureFlightMinClearance(creature)
     )
   );
 }
@@ -2064,11 +2086,13 @@ function acrobaticsBoutScore(
   rot: number,
   air: number,
   peak: number,
-  flight: boolean
+  flight: boolean,
+  minClear = flight ? FLIGHT_MIN_CLEARANCE_FLOOR : JUMP_MIN_CLEARANCE
 ): number {
+  if (peak < minClear) return 0;
   const flips = Math.floor(rot / (Math.PI * 2));
-  const airGate = Math.min(1, air / (flight ? 40 : 18));
-  const heightGate = Math.min(1, peak / (flight ? 35 : 20));
+  const airGate = Math.min(1, air / (flight ? 48 : 18));
+  const heightGate = Math.min(1, flightExcessClearance(peak, minClear) / Math.max(1, minClear * 0.75));
   const rotationWeight = flight ? 28 : 26;
   const flipWeight = flight ? 90 : 85;
   const peakWeight = flight ? 0.4 : 0.35;
@@ -2076,7 +2100,7 @@ function acrobaticsBoutScore(
     (
       rot * rotationWeight +
       flips * flipWeight +
-      Math.min(peak, 160) * peakWeight
+      Math.min(flightExcessClearance(peak, minClear), minClear * 1.5) * peakWeight
     ) *
       airGate *
       heightGate +
@@ -2088,38 +2112,41 @@ function directionalBoutScore(
   distance: number,
   frames: number,
   flight: boolean,
-  peakClearance = 0
+  peakClearance = 0,
+  minClear = flight ? FLIGHT_MIN_CLEARANCE_FLOOR : JUMP_MIN_CLEARANCE
 ): number {
-  if (frames < 3 || peakClearance < 6) return 0;
+  if (frames < (flight ? 8 : JUMP_MIN_FRAMES) || peakClearance < minClear) return 0;
   return flight
     ? distance * 1.85 + Math.min(frames, 200) * 0.35
-    : distance * 1.7 + Math.min(peakClearance, 120) * 0.25;
+    : distance * 1.7 + Math.min(peakClearance, minClear * 3) * 0.25;
 }
 
 function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
   const frames = creature.attemptBoutFrames ?? 0;
   const peak = creature.attemptBoutPeakClearance ?? 0;
   const isHop = creature.aerialBoutIsHop === true;
+  const flightMin = creatureFlightMinClearance(creature);
+  const jumpMin = creatureJumpMinClearance(creature);
   if (frames > 0) {
     if (goal === EvolutionGoal.LONG_JUMP && !isHop) {
       creature.jumpRightBestBoutScore = Math.max(
         creature.jumpRightBestBoutScore ?? 0,
-        directionalBoutScore(creature.attemptBoutRight ?? 0, frames, false, peak)
+        directionalBoutScore(creature.attemptBoutRight ?? 0, frames, false, peak, jumpMin)
       );
     } else if (goal === EvolutionGoal.JUMP_LEFT && !isHop) {
       creature.jumpLeftBestBoutScore = Math.max(
         creature.jumpLeftBestBoutScore ?? 0,
-        directionalBoutScore(creature.attemptBoutLeft ?? 0, frames, false, peak)
+        directionalBoutScore(creature.attemptBoutLeft ?? 0, frames, false, peak, jumpMin)
       );
     } else if (goal === EvolutionGoal.FLIGHT_RIGHT) {
       creature.flightRightBestBoutScore = Math.max(
         creature.flightRightBestBoutScore ?? 0,
-        directionalBoutScore(creature.attemptBoutRight ?? 0, frames, true, peak)
+        directionalBoutScore(creature.attemptBoutRight ?? 0, frames, true, peak, flightMin)
       );
     } else if (goal === EvolutionGoal.FLIGHT_LEFT) {
       creature.flightLeftBestBoutScore = Math.max(
         creature.flightLeftBestBoutScore ?? 0,
-        directionalBoutScore(creature.attemptBoutLeft ?? 0, frames, true, peak)
+        directionalBoutScore(creature.attemptBoutLeft ?? 0, frames, true, peak, flightMin)
       );
     } else if (goal === EvolutionGoal.JUMP_ACROBATICS && !isHop) {
       creature.jumpAcrobaticsBestBoutScore = Math.max(
@@ -2128,7 +2155,8 @@ function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
           creature.attemptBoutRotation ?? 0,
           frames,
           peak,
-          false
+          false,
+          jumpMin
         )
       );
     } else if (goal === EvolutionGoal.FLIGHT_ACROBATICS) {
@@ -2138,7 +2166,8 @@ function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
           creature.attemptBoutRotation ?? 0,
           frames,
           peak,
-          true
+          true,
+          flightMin
         )
       );
     }
@@ -2151,21 +2180,22 @@ function finalizeAttemptBout(creature: Creature, goal: EvolutionGoal): void {
 }
 
 /** Hang Time: best isolated jump bout; hop chains never score. */
-function jumpHangBoutScore(frames: number, peakClearance: number): number {
+function jumpHangBoutScore(frames: number, peakClearance: number, minClear = JUMP_MIN_CLEARANCE): number {
   // Contact-solver flicker and sub-clearance stutter steps are not jumps.
-  if (frames < JUMP_MIN_FRAMES || peakClearance < JUMP_MIN_CLEARANCE) return 0;
+  if (frames < JUMP_MIN_FRAMES || peakClearance < minClear) return 0;
   // Duration is the task. Clearance is bounded shaping and can never outweigh
   // thirty additional airborne frames.
-  return Math.max(0, frames) * 2 + Math.min(60, Math.max(0, peakClearance)) * 0.5;
+  return Math.max(0, frames) * 2 + Math.min(minClear * 1.5, Math.max(0, peakClearance)) * 0.5;
 }
 
 function jumpSpeedBoutScore(
   peakSpeed: number,
   frames: number,
-  peakClearance: number
+  peakClearance: number,
+  minClear = JUMP_MIN_CLEARANCE
 ): number {
-  if (frames < JUMP_MIN_FRAMES || peakClearance < JUMP_MIN_CLEARANCE) return 0;
-  return peakSpeed * 50 + Math.min(peakClearance, 120) * 0.3 + Math.min(frames, 80) * 0.35;
+  if (frames < JUMP_MIN_FRAMES || peakClearance < minClear) return 0;
+  return peakSpeed * 50 + Math.min(peakClearance, minClear * 3) * 0.3 + Math.min(frames, 80) * 0.35;
 }
 
 function recordHopBout(
@@ -2177,6 +2207,8 @@ function recordHopBout(
   peakClearance: number
 ): void {
   if (frames < 1) return;
+  // Micro-skims below the jump clearance floor are not hops.
+  if (peakClearance < creatureJumpMinClearance(creature)) return;
   creature.hopDistanceRight = (creature.hopDistanceRight ?? 0) + Math.max(0, right);
   creature.hopDistanceLeft = (creature.hopDistanceLeft ?? 0) + Math.max(0, left);
   const boutSpeed =
@@ -2187,7 +2219,6 @@ function recordHopBout(
     boutSpeed
   );
   creature.hopBoutCount = (creature.hopBoutCount ?? 0) + 1;
-  void peakClearance;
 }
 
 function revokeLastIsolatedJumpToHop(creature: Creature): void {
@@ -2235,6 +2266,7 @@ function finalizeIsolatedOrHopBout(creature: Creature): void {
   const left = creature.attemptBoutLeft ?? 0;
   const peakSpeed = creature.aerialBoutPeakSpeed ?? 0;
   const isHop = creature.aerialBoutIsHop === true;
+  const jumpMin = creatureJumpMinClearance(creature);
 
   if (frames <= 0) return;
 
@@ -2244,17 +2276,18 @@ function finalizeIsolatedOrHopBout(creature: Creature): void {
     return;
   }
 
-  const hangScore = jumpHangBoutScore(frames, peak);
-  const rightScore = directionalBoutScore(right, frames, false, peak);
-  const leftScore = directionalBoutScore(left, frames, false, peak);
+  const hangScore = jumpHangBoutScore(frames, peak, jumpMin);
+  const rightScore = directionalBoutScore(right, frames, false, peak, jumpMin);
+  const leftScore = directionalBoutScore(left, frames, false, peak, jumpMin);
   const acroScore = acrobaticsBoutScore(
     creature.attemptBoutRotation ?? 0,
     frames,
     peak,
-    false
+    false,
+    jumpMin
   );
   const heightClearance =
-    peak >= JUMP_MIN_CLEARANCE && frames >= JUMP_MIN_FRAMES ? peak : 0;
+    peak >= jumpMin && frames >= JUMP_MIN_FRAMES ? peak : 0;
 
   creature.jumpHangBestBoutScore = Math.max(
     creature.jumpHangBestBoutScore ?? 0,
@@ -2264,7 +2297,7 @@ function finalizeIsolatedOrHopBout(creature: Creature): void {
     creature.jumpHeightBestClearance ?? 0,
     heightClearance
   );
-  const speedScore = jumpSpeedBoutScore(peakSpeed, frames, peak);
+  const speedScore = jumpSpeedBoutScore(peakSpeed, frames, peak, jumpMin);
   creature.jumpSpeedBestBoutScore = Math.max(
     creature.jumpSpeedBestBoutScore ?? 0,
     speedScore
@@ -2890,18 +2923,32 @@ function resolveSolidFlatGround(
 }
 
 function hopRightFitness(creature: Creature): number {
-  const live = creature.aerialBoutIsHop ? creature.attemptBoutRight ?? 0 : 0;
+  const jumpMin = creatureJumpMinClearance(creature);
+  const livePeak = creature.attemptBoutPeakClearance ?? 0;
+  const live =
+    creature.aerialBoutIsHop && livePeak >= jumpMin
+      ? creature.attemptBoutRight ?? 0
+      : 0;
   return Math.max(0, (creature.hopDistanceRight ?? 0) + live) * 1.7;
 }
 
 function hopLeftFitness(creature: Creature): number {
-  const live = creature.aerialBoutIsHop ? creature.attemptBoutLeft ?? 0 : 0;
+  const jumpMin = creatureJumpMinClearance(creature);
+  const livePeak = creature.attemptBoutPeakClearance ?? 0;
+  const live =
+    creature.aerialBoutIsHop && livePeak >= jumpMin
+      ? creature.attemptBoutLeft ?? 0
+      : 0;
   return Math.max(0, (creature.hopDistanceLeft ?? 0) + live) * 1.7;
 }
 
 function hopSpeedFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
+  const livePeak = creature.aerialBoutPeakLowestClearance ?? 0;
   const liveSpeed =
-    creature.aerialBoutIsHop && (creature.jumpHangBoutFrames ?? 0) > 0
+    creature.aerialBoutIsHop &&
+    (creature.jumpHangBoutFrames ?? 0) > 0 &&
+    livePeak >= jumpMin
       ? creature.aerialBoutPeakSpeed ?? 0
       : 0;
   const peak = Math.max(creature.hopPeakSpeed ?? 0, liveSpeed);
@@ -2940,24 +2987,27 @@ function stayTallFitness(creature: Creature): number {
 }
 
 function jumpHangTimeFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const active =
     creature.aerialBoutIsHop
       ? 0
       : jumpHangBoutScore(
           creature.jumpHangBoutFrames ?? 0,
-          creature.jumpHangBoutPeakClearance ?? 0
+          creature.jumpHangBoutPeakClearance ?? 0,
+          jumpMin
         );
   return Math.max(creature.jumpHangBestBoutScore ?? 0, active);
 }
 
 function jumpHeightFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const live =
     creature.aerialBoutIsHop
       ? 0
       : creature.aerialBoutPeakLowestClearance ?? 0;
   const gatedLive =
     (creature.jumpHangBoutFrames ?? 0) >= JUMP_MIN_FRAMES &&
-    live >= JUMP_MIN_CLEARANCE
+    live >= jumpMin
       ? live
       : 0;
   return Math.max(creature.jumpHeightBestClearance ?? 0, gatedLive);
@@ -2965,6 +3015,7 @@ function jumpHeightFitness(creature: Creature): number {
 
 /** Jump right — isolated jump distance right (hop chains score 0). */
 function jumpRightFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const active =
     creature.aerialBoutIsHop
       ? 0
@@ -2972,13 +3023,15 @@ function jumpRightFitness(creature: Creature): number {
           creature.attemptBoutRight ?? 0,
           creature.attemptBoutFrames ?? 0,
           false,
-          creature.attemptBoutPeakClearance ?? 0
+          creature.attemptBoutPeakClearance ?? 0,
+          jumpMin
         );
   return Math.max(creature.jumpRightBestBoutScore ?? 0, active);
 }
 
 /** Jump left — isolated jump distance left. */
 function jumpLeftFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const active =
     creature.aerialBoutIsHop
       ? 0
@@ -2986,26 +3039,30 @@ function jumpLeftFitness(creature: Creature): number {
           creature.attemptBoutLeft ?? 0,
           creature.attemptBoutFrames ?? 0,
           false,
-          creature.attemptBoutPeakClearance ?? 0
+          creature.attemptBoutPeakClearance ?? 0,
+          jumpMin
         );
   return Math.max(creature.jumpLeftBestBoutScore ?? 0, active);
 }
 
 /** Peak airspeed during an isolated jump. */
 function jumpSpeedFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const live =
     creature.aerialBoutIsHop
       ? 0
       : jumpSpeedBoutScore(
           creature.aerialBoutPeakSpeed ?? 0,
           creature.jumpHangBoutFrames ?? 0,
-          creature.aerialBoutPeakLowestClearance ?? 0
+          creature.aerialBoutPeakLowestClearance ?? 0,
+          jumpMin
         );
   return Math.max(creature.jumpSpeedBestBoutScore ?? 0, live);
 }
 
 /** Jump flips / rotation while airborne from an isolated jump. */
 function jumpAcrobaticsFitness(creature: Creature): number {
+  const jumpMin = creatureJumpMinClearance(creature);
   const active =
     creature.aerialBoutIsHop
       ? 0
@@ -3013,7 +3070,8 @@ function jumpAcrobaticsFitness(creature: Creature): number {
           creature.attemptBoutRotation ?? 0,
           creature.attemptBoutFrames ?? 0,
           creature.attemptBoutPeakClearance ?? 0,
-          false
+          false,
+          jumpMin
         );
   return Math.max(creature.jumpAcrobaticsBestBoutScore ?? 0, active);
 }
@@ -3068,6 +3126,9 @@ function motorRampFitness(creature: Creature): number {
 function speedFitness(creature: Creature): number {
   const peak = creature.peakSpeed ?? 0;
   const distance = Math.max(0, creature.currentX - creature.startX);
+  // Require real travel (~half body length) so thrashing-in-place cannot win on spike speed.
+  const minTravel = Math.max(40, (creature.restBodyWidth ?? 0) * 0.5);
+  if (distance < minTravel) return distance * 0.15;
   return peak * 45 + distance * 0.35;
 }
 
@@ -3211,12 +3272,41 @@ function roughTerrainFitness(creature: Creature): number {
 }
 
 /** Whole body clear of the floor — real flight, not one foot up. */
-function isFullyAirborne(creature: Creature, minClear = 6): boolean {
+function isFullyAirborne(creature: Creature, minClear?: number): boolean {
+  const gate = minClear ?? creatureFlightMinClearance(creature);
   for (const n of creature.nodes) {
     if (n.isGround) return false;
-    if (GROUND_Y - (n.y + n.radius) < minClear) return false;
+    if (GROUND_Y - (n.y + n.radius) < gate) return false;
   }
   return true;
+}
+
+function creatureFlightMinClearance(creature: Creature): number {
+  return flightRewardMinClearance(
+    creature.restBodyHeight ?? 0,
+    creature.restBodyWidth ?? 0
+  );
+}
+
+function creatureJumpMinClearance(creature: Creature): number {
+  return jumpRewardMinClearance(creature.restBodyHeight ?? 0);
+}
+
+function creatureJumpLandMinHeight(creature: Creature): number {
+  return jumpLandMinHeight(creature.restBodyHeight ?? 0);
+}
+
+function creatureFlightLandCeiling(creature: Creature): number {
+  return flightLandCeiling(creature.restBodyHeight ?? 0);
+}
+
+function creatureGlideCorridor(creature: Creature): { min: number; max: number } {
+  return glideCorridorBand(creature.restBodyHeight ?? 0);
+}
+
+/** Excess clearance above the flight reward floor (standing / skim → 0). */
+function flightExcessClearance(clearance: number, minClear: number): number {
+  return Math.max(0, clearance - minClear);
 }
 
 function flightClearance(creature: Creature): number {
@@ -3236,17 +3326,22 @@ function flightTimeBoutScore(
   flapFrames: number,
   flapWork: number,
   symFrames = 0,
-  symQuality = 0
+  symQuality = 0,
+  minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
-  if (frames < 3 || peak < 6) return 0;
+  const excessPeak = flightExcessClearance(peak, minClear);
+  if (frames < 8 || excessPeak < 1) return 0;
   const meanClear = frames > 0 ? integral / frames : 0;
+  const excessMean = flightExcessClearance(meanClear, minClear);
   // Bout duration is the streak; episode totals never enter.
   const sustain =
     frames * 2.6 + Math.pow(Math.max(0, frames - 36), 1.18) * 0.32;
-  const cruise = Math.min(meanClear, 150) * 1.15;
+  const cruise = Math.min(excessMean, minClear * 2) * 1.15;
   const leapiness =
-    peak > 40 ? Math.max(0, peak / Math.max(16, meanClear) - 1.75) : 0;
-  const leapPenalty = leapiness * peak * 0.42;
+    excessPeak > minClear * 0.7
+      ? Math.max(0, peak / Math.max(minClear, meanClear) - 1.75)
+      : 0;
+  const leapPenalty = leapiness * excessPeak * 0.42;
   const flapBonus =
     Math.min(140, Math.max(0, flapFrames)) * 0.5 +
     Math.min(200, Math.max(0, flapWork)) * 0.08;
@@ -3268,7 +3363,8 @@ function activeFlightTimeBoutFitness(creature: Creature): number {
     Math.max(0, (creature.wingFlapFrames ?? 0) - flapBase),
     Math.max(0, (creature.wingFlapWork ?? 0) - workBase),
     Math.max(0, (creature.wingSymFlapFrames ?? 0) - symBase),
-    Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase)
+    Math.max(0, (creature.wingSymFlapQuality ?? 0) - symQBase),
+    creatureFlightMinClearance(creature)
   );
 }
 
@@ -3301,17 +3397,28 @@ function activeGlideBoutFitness(creature: Creature): number {
   const flyDist = creature.glideBoutDistance ?? 0;
   const air = creature.glideBoutFrames ?? 0;
   const peak = creature.glideBoutPeakClearance ?? 0;
+  const minClear = creatureFlightMinClearance(creature);
   const meanClear =
     air > 0 ? (creature.glideBoutHeightIntegral ?? 0) / air : 0;
   const corridor = creature.glideBoutCorridorFrames ?? 0;
   const corridorDist = creature.glideBoutCorridorDist ?? 0;
   const openGlide = creature.glideBoutOpenDist ?? 0;
+  const excessPeak = flightExcessClearance(peak, minClear);
+  const excessMean = flightExcessClearance(meanClear, minClear);
+
+  // Below the body-scaled flight floor: no glide reward (standing / skim hops).
+  if (air < 12 || excessPeak < 1) return 0;
 
   // Prefer mid-height cruise; do NOT reward ballistic peak height.
-  const cruiseHeight = Math.min(meanClear, 170) * 2.4 + Math.min(peak, 200) * 0.12;
+  const cruiseHeight =
+    Math.min(excessMean, minClear * 2) * 2.4 +
+    Math.min(excessPeak, minClear * 2.2) * 0.12;
   // Leap signature: peak much higher than mean → penalty
-  const leapiness = peak > 50 ? Math.max(0, peak / Math.max(20, meanClear) - 1.55) : 0;
-  const leapPenalty = leapiness * peak * 0.45;
+  const leapiness =
+    excessPeak > minClear * 0.6
+      ? Math.max(0, peak / Math.max(minClear, meanClear) - 1.55)
+      : 0;
+  const leapPenalty = leapiness * excessPeak * 0.45;
 
   // Sustained flight: long unbroken airtime + time in the glide corridor
   const streakBonus =
@@ -3620,7 +3727,7 @@ export function updateCreaturePhysics(
     );
   }
 
-  const flyingNow = isFullyAirborne(creature, 6);
+  const flyingNow = isFullyAirborne(creature);
   let lockSailReefed = false;
   let dampMotors = false;
   let brainOutputs: number[];
@@ -4397,7 +4504,7 @@ export function updateCreaturePhysics(
 
     // Flight Land: climb to a ceiling, punish further height gain, then reward descent.
     if (config.goal === EvolutionGoal.FLIGHT_LAND) {
-      const landCeiling = LAND_CEILING_FLIGHT;
+      const landCeiling = creatureFlightLandCeiling(creature);
       const clear = Math.max(airborneHeight, flightClearance(creature));
       if (!creature.landReachedCeiling) {
         if (climbing && clear <= landCeiling * 1.05) {
@@ -4439,7 +4546,7 @@ export function updateCreaturePhysics(
       !creature.aerialBoutIsHop
     ) {
       const takeoffX = creature.jumpTakeoffX;
-      if (takeoffX !== undefined && peakAir >= JUMP_LAND_MIN_HEIGHT) {
+      if (takeoffX !== undefined && peakAir >= creatureJumpLandMinHeight(creature)) {
         const drift = Math.abs(centerX - takeoffX);
         const returnFactor = Math.max(0, 1 - drift / JUMP_LAND_RETURN_TOLERANCE);
         // Squared return: far landings collapse; only near-takeoff sticks.
@@ -4508,7 +4615,7 @@ export function updateCreaturePhysics(
   }
 
   // Flight / jump air metrics: streak, distance L/R, airspeed, rotation
-  const flying = isFullyAirborne(creature, 6);
+  const flying = isFullyAirborne(creature);
   const allPointsOff = !nowGrounded;
   const dxRight = Math.max(0, centerX - prevX);
   const dxLeft = Math.max(0, prevX - centerX);
@@ -4759,10 +4866,11 @@ export function updateCreaturePhysics(
       }
     }
     // Mid-height, gentle vertical motion, open sail, still moving forward
+    const corridorBand = creatureGlideCorridor(creature);
     const inCorridor =
       open >= 0.65 &&
-      clear >= 40 &&
-      clear <= 210 &&
+      clear >= corridorBand.min &&
+      clear <= corridorBand.max &&
       vertSpeed > -1.2 &&
       vertSpeed < 2.8 &&
       horizSpeed > 2.0;

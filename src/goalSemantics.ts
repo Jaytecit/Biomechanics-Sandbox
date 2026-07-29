@@ -22,13 +22,13 @@ const jump = (goal: EvolutionGoal, success: string): GoalSemanticDecision => ({
   goal, decision: 'keep', geometry: 'Flat runway with goal marker when required',
   requirements: 'At least one flexible actuator; no aero for jump classification', success,
   failure: 'No supported takeoff or no supported landing where required',
-  shortcutAudit: 'Flight bodies are ineligible; ground thrashing does not count as a jump',
+  shortcutAudit: 'Flight bodies are ineligible; clearance below ~18% body height and ground thrashing do not count as a jump',
   rationale2d: 'Takeoff, clearance, travel, rotation, and landing are physical 2D events.',
 });
 const flight = (goal: EvolutionGoal, success: string, geometry = 'Open side-on airspace'): GoalSemanticDecision => ({
   goal, decision: 'keep', geometry, requirements: 'Wing, paraglider, or passive chute as appropriate',
-  success, failure: 'No sustained fully-airborne response',
-  shortcutAudit: 'Ground rolling and one-frame hops are gated out',
+  success, failure: 'No sustained fully-airborne response above body-scaled min clearance',
+  shortcutAudit: 'Ground rolling, skimming, and hops below ~½ body height are gated out before any flight reward',
   rationale2d: 'Altitude, airspeed, glide, rotation, and landing are valid planar-flight measures.',
 });
 

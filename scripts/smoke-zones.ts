@@ -23,38 +23,52 @@ function byName(name: string) {
   return t!;
 }
 
-const flapper = byName('Flapper');
-const walker = byName('Biped Walker');
-const cart = byName('Motor Cart');
-const glider = byName('Proven Glider');
-const jumpCart = byName('Jump Cart');
+const bird = byName('RoboBird');
+const walker = byName('Sprongo');
+const eggs = byName('Tool Eggs');
+const glide = byName('Glide Cart');
+const chute = byName('Chute Cart');
+const motor = byName('Motor Cart');
 
-assert.equal(primaryZoneForBlueprint(flapper), 'flying');
-assert.equal(primaryZoneForBlueprint(glider), 'flying');
-assert.equal(primaryZoneForBlueprint(cart), 'motor');
-assert.equal(primaryZoneForBlueprint(jumpCart), 'motor');
+assert.equal(primaryZoneForBlueprint(bird), 'flying');
+assert.equal(primaryZoneForBlueprint(glide), 'flying');
+assert.equal(primaryZoneForBlueprint(chute), 'flying');
+assert.equal(primaryZoneForBlueprint(motor), 'motor');
 assert.equal(primaryZoneForBlueprint(walker), 'walking');
+assert.equal(primaryZoneForBlueprint(eggs), 'walking');
 
-assert.ok(blueprintAllowedInZone(flapper, 'flying'));
-assert.ok(!blueprintAllowedInZone(flapper, 'jumping'));
-assert.ok(!blueprintAllowedInZone(flapper, 'walking'));
-assert.ok(!blueprintAllowedInZone(flapper, 'motor'));
-assert.ok(blueprintAllowedInZone(flapper, 'free'));
+assert.ok(blueprintAllowedInZone(bird, 'flying'));
+assert.ok(!blueprintAllowedInZone(bird, 'jumping'));
+assert.ok(!blueprintAllowedInZone(bird, 'walking'));
+assert.ok(!blueprintAllowedInZone(bird, 'motor'));
+assert.ok(blueprintAllowedInZone(bird, 'free'));
 
 assert.ok(blueprintAllowedInZone(walker, 'walking'));
 assert.ok(blueprintAllowedInZone(walker, 'jumping'));
 assert.ok(!blueprintAllowedInZone(walker, 'flying'));
-assert.ok(!blueprintAllowedInZone(cart, 'jumping'));
+assert.ok(!blueprintAllowedInZone(glide, 'jumping'));
+assert.ok(!blueprintAllowedInZone(glide, 'motor'));
+assert.ok(blueprintAllowedInZone(motor, 'motor'));
+assert.ok(!blueprintAllowedInZone(motor, 'flying'));
 
-assert.ok(inspectBlueprint(glider).hasAero);
-assert.ok(inspectBlueprint(glider).hasMotorWheel);
-assert.deepEqual(zonesForBlueprint(glider).sort(), ['flying', 'free'].sort());
+assert.ok(inspectBlueprint(glide).hasAero);
+assert.ok(inspectBlueprint(glide).hasMotorWheel);
+assert.ok(inspectBlueprint(motor).hasMotorWheel);
+assert.ok(!inspectBlueprint(motor).hasAero);
+assert.deepEqual(zonesForBlueprint(glide).sort(), ['flying', 'free'].sort());
+assert.deepEqual(zonesForBlueprint(motor).sort(), ['free', 'motor'].sort());
 
 const jumpBodies = filterTemplatesForZone(CREATURE_TEMPLATES, 'jumping');
 assert.ok(jumpBodies.every(t => !inspectBlueprint(t).hasAero));
 assert.ok(jumpBodies.every(t => !inspectBlueprint(t).hasMotorWheel));
-assert.ok(jumpBodies.some(t => t.name === 'Biped Walker'));
-assert.ok(!jumpBodies.some(t => t.name === 'Flapper'));
+assert.ok(jumpBodies.some(t => t.name === 'Sprongo'));
+assert.ok(jumpBodies.some(t => t.name === 'Tool Eggs'));
+assert.ok(!jumpBodies.some(t => t.name === 'RoboBird'));
+
+const motorBodies = filterTemplatesForZone(CREATURE_TEMPLATES, 'motor');
+assert.ok(motorBodies.some(t => t.name === 'Motor Cart'));
+assert.ok(!motorBodies.some(t => t.name === 'Glide Cart'));
+assert.ok(!motorBodies.some(t => t.name === 'Chute Cart'));
 
 assert.ok(goalAllowedInZone(EvolutionGoal.FLIGHT_TIME, 'flying'));
 assert.ok(!goalAllowedInZone(EvolutionGoal.FLIGHT_TIME, 'jumping'));

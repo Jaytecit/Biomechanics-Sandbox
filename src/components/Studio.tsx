@@ -61,12 +61,19 @@ import {
 import { projectHingeStopsOnMap } from '../hingeStops';
 
 const STUDIO_GRID_SIZE = 30;
+/** Ground / anatomy origin sits this many grid cells above the canvas bottom. */
+const STUDIO_GROUND_GRID_OFFSET = 3;
 const STUDIO_ZOOM_MIN = 0.5;
 const STUDIO_ZOOM_MAX = 2;
 const STUDIO_ZOOM_STEP = 0.25;
 
 function snapToGrid(value: number, size = STUDIO_GRID_SIZE): number {
   return Math.round(value / size) * size;
+}
+
+/** World Y of the ground alignment line (and anatomy origin) in canvas pixels. */
+function studioOriginY(canvasHeight: number): number {
+  return canvasHeight - STUDIO_GROUND_GRID_OFFSET * STUDIO_GRID_SIZE;
 }
 
 function parallelSoftStrokeOffset(
@@ -1392,7 +1399,7 @@ export const Studio: React.FC<StudioProps> = ({
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2 + 50; // Shift downward to allow ground height visual reference
+    const centerY = studioOriginY(canvas.height);
     const visibleLeft = centerX - canvas.width / (2 * studioZoom);
     const visibleRight = centerX + canvas.width / (2 * studioZoom);
     const visibleTop = centerY - centerY / studioZoom;
@@ -1433,20 +1440,20 @@ export const Studio: React.FC<StudioProps> = ({
     ctx.lineTo(visibleRight, centerY);
     ctx.stroke();
 
-    // Ground reference line
+    // Ground reference line (3 grid squares above canvas bottom in default view)
     ctx.strokeStyle = '#b91c1c';
     ctx.lineWidth = 1.5 / studioZoom;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    ctx.moveTo(visibleLeft, centerY); // Relative ground reference
+    ctx.moveTo(visibleLeft, centerY);
     ctx.lineTo(visibleRight, centerY);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = '#f87171';
-    ctx.font = 'bold 9px ui-sans-serif, system-ui';
+    ctx.font = `${Math.max(9, 9 / studioZoom)}px ui-sans-serif, system-ui`;
     ctx.fillText(
-      'GROUND ALIGNMENT LEVEL',
-      visibleLeft + 15 / studioZoom,
+      'GROUND (0 px)',
+      visibleLeft + 52 / studioZoom,
       centerY - 8 / studioZoom
     );
 
@@ -1736,6 +1743,45 @@ export const Studio: React.FC<StudioProps> = ({
     drawAppearance(ctx, appearanceSkeleton, appearance, 'front');
     ctx.restore();
 
+    // Height ruler along the left edge of the visualizer (screen space; stays readable when zoomed)
+    const rulerWidth = 44;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.fillRect(0, 0, rulerWidth, canvas.height);
+    ctx.strokeStyle = '#475569';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(rulerWidth - 0.5, 0);
+    ctx.lineTo(rulerWidth - 0.5, canvas.height);
+    ctx.stroke();
+
+    const maxWorldHeight = Math.ceil(centerY / studioZoom / STUDIO_GRID_SIZE) * STUDIO_GRID_SIZE;
+    const majorEvery = STUDIO_GRID_SIZE * 2; // label every 60px
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let h = 0; h <= maxWorldHeight; h += STUDIO_GRID_SIZE) {
+      const sy = centerY - h * studioZoom;
+      if (sy < -4 || sy > canvas.height + 4) continue;
+      const isMajor = h % majorEvery === 0;
+      ctx.strokeStyle = isMajor ? '#94a3b8' : '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(isMajor ? 28 : 34, sy);
+      ctx.lineTo(rulerWidth - 1, sy);
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle = h === 0 ? '#f87171' : '#e2e8f0';
+        ctx.font = 'bold 9px ui-sans-serif, system-ui';
+        ctx.fillText(`${h}`, 26, sy);
+      }
+    }
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 8px ui-sans-serif, system-ui';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('H px', 6, 6);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '7px ui-sans-serif, system-ui';
+    ctx.fillText(`${STUDIO_GRID_SIZE}px/sq`, 4, 18);
+
   }, [nodes, muscles, solidSegments, appearance, selectedNodeId, selectedNodeIds, selectedMuscleId, editorMode, linkFromNodeId, linkCursor, dimensions, rangePreviewEnabled, snapToGridEnabled, studioZoom]);
 
   // Convert client coords to canvas buffer coords (prevents offset when CSS scales canvas)
@@ -1748,7 +1794,7 @@ export const Studio: React.FC<StudioProps> = ({
     const clickX = (clientX - rect.left) * scaleX;
     const clickY = (clientY - rect.top) * scaleY;
     const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2 + 50;
+    const centerY = studioOriginY(canvas.height);
     return {
       x: (clickX - centerX) / studioZoom,
       y: (clickY - centerY) / studioZoom,
@@ -1759,7 +1805,8 @@ export const Studio: React.FC<StudioProps> = ({
 
   const boundAndMaybeSnap = (x: number, y: number, centerX: number, centerY: number, canvasH: number) => {
     const margin = 20 / studioZoom;
-    const minX = -centerX / studioZoom + margin;
+    const leftRulerPad = 52 / studioZoom; // keep nodes clear of the height ruler
+    const minX = -centerX / studioZoom + leftRulerPad;
     const maxX = centerX / studioZoom - margin;
     const minY = -centerY / studioZoom + margin;
     const maxY = (canvasH - centerY) / studioZoom - margin;
@@ -2530,27 +2577,10 @@ export const Studio: React.FC<StudioProps> = ({
       <div className="flex min-h-0 flex-col overflow-visible rounded-xl border border-slate-200/80 bg-white shadow-sm lg:col-span-2">
         
         {/* Header toolbar */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/50 px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/50 px-3 py-2">
           <div className="flex items-center gap-2">
             <Wrench className="w-5 h-5 text-indigo-600 animate-pulse" />
             <h3 className="text-sm font-bold text-slate-800">Visual Creature Editor</h3>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Quick Templates Import */}
-            <span className="text-[10px] text-slate-400 font-bold uppercase mr-1">Import Body:</span>
-            <div className="flex gap-1 max-w-[280px] overflow-x-auto">
-              {zoneLibrary.slice(0, 8).map(t => (
-                <button
-                  key={t.name}
-                  type="button"
-                  onClick={() => loadTemplateIntoStudio(t)}
-                  className="px-2 py-1 text-[10px] font-bold border border-slate-200 hover:bg-slate-100 rounded text-slate-600 whitespace-nowrap cursor-pointer"
-                >
-                  {t.name.split(' ')[0]}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

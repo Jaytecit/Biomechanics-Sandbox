@@ -47,7 +47,7 @@ assert.doesNotMatch(getGoalInfo(EvolutionGoal.MOTOR_SLALOM).description, /weave|
 assert.match(getGoalInfo(EvolutionGoal.DODGEBALL).title, /Hazard Dash/);
 
 const glideBlueprint =
-  CREATURE_TEMPLATES.find(template => template.name === 'Proven Glider') ??
+  CREATURE_TEMPLATES.find(template => template.name === 'Glide Cart') ??
   blueprint;
 const glideIo = genomeIOForBlueprint(glideBlueprint);
 const makeGlider = (id: string) =>

@@ -4,7 +4,7 @@
  */
 
 import { EvolutionGoal } from './types';
-import { LAND_CEILING_FLIGHT, JUMP_LAND_MIN_HEIGHT, JUMP_LAND_RETURN_TOLERANCE } from './physicsConstants';
+import { JUMP_LAND_MIN_HEIGHT, JUMP_LAND_RETURN_TOLERANCE, TYPICAL_BODY_HEIGHT, FLIGHT_MIN_CLEARANCE_BODY_FRAC, FLIGHT_MIN_CLEARANCE_FLOOR } from './physicsConstants';
 
 export type GoalCategory =
   | 'locomotion'
@@ -276,8 +276,8 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     howToAchieve:
       'Best with Flapper: learn a matched L/R flap cycle (bird-like). Touching down ends that flight; later hops do not add up.',
     reward:
-      'Points from best single fully-airborne bout: duration dominates, with cruise height + wing-flap work + symmetrical flap bonus − leapiness. Separate hops never accumulate.',
-    tip: 'Pick the Flapper template. Flap both wings together — matched strokes lift best and score best. Holding still will not float.',
+      'Points from best single fully-airborne bout above a body-scaled height floor (~½ resting body height): duration dominates, with cruise height + wing-flap work + symmetrical flap bonus − leapiness. Separate hops never accumulate.',
+    tip: `Pick the Flapper template. Matched L/R strokes lift best. Skimming below ~${FLIGHT_MIN_CLEARANCE_FLOOR}px (or ${Math.round(FLIGHT_MIN_CLEARANCE_BODY_FRAC * 100)}% of body height) scores 0.`,
     activeClass: 'border-sky-600 bg-sky-50 text-sky-900',
   },
   [EvolutionGoal.FLIGHT_HEIGHT]: {
@@ -289,7 +289,7 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     howToAchieve:
       'Flap both wings together to climb after takeoff and stay aloft at height. Ballistic hops and one-sided thrashing score poorly.',
     reward:
-      'Points from best bout: sustained cruise altitude dominates, with flap-gated peak, powered-climb credit, and symmetrical flap bonus. Leapiness is penalised.',
+      'Points from best bout above the body-scaled flight floor: sustained cruise altitude dominates, with flap-gated peak, powered-climb credit, and symmetrical flap bonus. Leapiness is penalised.',
     tip: 'Pick the Flapper template. Matched L/R strokes give the strongest lift; peak height from a launch impulse loses to a longer climb-and-hold.',
     activeClass: 'border-sky-700 bg-sky-100 text-sky-950',
   },
@@ -340,7 +340,7 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
       'Climb/clear to the approach ceiling, begin a controlled descent (extra height gain is penalized), then flare and land upright. Touching down ends the bout.',
     reward:
       'Points from best complete climb→descent→stick bout. Re-takeoffs after landing start a new attempt (max, not sum).',
-    tip: `Ceiling ≈ ${LAND_CEILING_FLIGHT}px. Re-climbing after you start descending is also penalized.`,
+    tip: `Ceiling ≈ ${Math.round(TYPICAL_BODY_HEIGHT * 1.35)}px for a typical body (scales with resting height × 1.35). Re-climbing after you start descending is also penalized.`,
     activeClass: 'border-teal-700 bg-teal-50 text-teal-950',
   },
   [EvolutionGoal.FLIGHT_ACROBATICS]: {

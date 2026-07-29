@@ -87,8 +87,8 @@ console.log(
 );
 
 const templates = [
-  CREATURE_TEMPLATES.find(t => t.name === 'Motor Cart')!,
-  CREATURE_TEMPLATES.find(t => t.name === 'Biped Walker')!,
+  CREATURE_TEMPLATES.find(t => t.name === 'Glide Cart')!,
+  CREATURE_TEMPLATES.find(t => t.name === 'Sprongo')!,
 ];
 
 for (const template of templates) {
@@ -133,7 +133,7 @@ for (const template of templates) {
     ...DEFAULT_ARENA_MODIFIERS,
     difficulty: 1,
   });
-  const template = CREATURE_TEMPLATES.find(t => t.name === 'Motor Cart')!;
+  const template = CREATURE_TEMPLATES.find(t => t.name === 'Glide Cart')!;
   const { inputs, outputs } = genomeIOForBlueprint(template);
   const genome = createBaseGenome(inputs, outputs);
   for (const c of genome.connections) {

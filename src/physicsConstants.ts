@@ -21,7 +21,7 @@ export const GROUND_Y = 480;
  * travel. Controllers trained under 4.8.x–4.13.x remain visible but stale when
  * fingerprints or physics version diverge.
  */
-export const SOFT_BODY_PHYSICS_VERSION = '4.21.0';
+export const SOFT_BODY_PHYSICS_VERSION = '4.22.0';
 
 /**
  * Length-error below this (px) is treated as numerical residual in diagnostics.
@@ -61,10 +61,13 @@ export const SHUFFLE_OSC_WEIGHT = 0.55;
  * continuation — not an isolated jump.
  */
 export const HOP_CHAIN_GROUND_MAX = 10;
-/** Isolated jump bouts below this lowest-anatomy clearance score nothing. */
-export const JUMP_MIN_CLEARANCE = 6;
+/**
+ * Absolute floor for jump clearance when a creature has no measured size yet.
+ * Prefer `jumpRewardMinClearance(creature)` which scales with body height.
+ */
+export const JUMP_MIN_CLEARANCE = 12;
 /** Isolated jump bouts shorter than this many airborne frames score nothing. */
-export const JUMP_MIN_FRAMES = 3;
+export const JUMP_MIN_FRAMES = 4;
 export const WORLD_GRAVITY = 0.4;
 export const RELAXATION_ITERATIONS = 8;
 export const GAIT_HISTORY_LENGTH = 48;
@@ -94,10 +97,31 @@ export function telescopeCommandDeltaBudget(minLength: number, maxLength: number
  */
 export const PHYSICS_DT = 1;
 
-/** Reference creature scale (Motor Cart / biped ballpark). */
+/**
+ * Reference creature scale for reward gates when live AABB is unavailable.
+ *
+ * Studio canvases are often ~600×600 design spaces, but settled physics bodies
+ * in this arena are typically ~70–150px tall (GROUND_Y = 480). Always prefer
+ * measured `restBodyHeight` / `restBodyWidth` on the creature; these constants
+ * are fallbacks and course-geometry references only.
+ */
 export const TYPICAL_NODE_RADIUS = 12;
-export const TYPICAL_BODY_HEIGHT = 70;
-export const TYPICAL_BODY_LENGTH = 90;
+export const TYPICAL_BODY_HEIGHT = 120;
+export const TYPICAL_BODY_LENGTH = 120;
+/** Design-canvas ballpark the authoring UI often presents; not a physics AABB. */
+export const DESIGN_CANVAS_BODY = 600;
+/** Fraction of resting body height that must clear the floor before flight rewards unlock. */
+export const FLIGHT_MIN_CLEARANCE_BODY_FRAC = 0.5;
+/** Fraction of resting body width that can also set the flight clearance floor (wingspan). */
+export const FLIGHT_MIN_CLEARANCE_SPAN_FRAC = 0.2;
+/** Absolute minimum flight clearance (px) even for tiny bodies. */
+export const FLIGHT_MIN_CLEARANCE_FLOOR = 36;
+/** Jump / hop leave-ground clearance as a fraction of resting body height. */
+export const JUMP_MIN_CLEARANCE_BODY_FRAC = 0.18;
+/** Jump & Land COM rise floor as a fraction of resting body height. */
+export const JUMP_LAND_MIN_HEIGHT_BODY_FRAC = 0.28;
+/** Flight Land approach ceiling as a multiple of resting body height (COM/clearance). */
+export const LAND_CEILING_BODY_MULT = 1.35;
 
 /** Horizontal size multiplier for course objects and gaps (D062). */
 export const WIDTH_SCALE = 3;
@@ -182,20 +206,80 @@ export const PARA_BLEND_FRAMES = 10;
 export const PARA_DEPLOY_AIR_GATE = 8;
 
 /**
- * Flight Land approach ceiling (COM altitude / clearance, px).
- * Climb is rewarded only up to this height; further gain is penalized and
- * descent credit unlocks after the ceiling is reached.
+ * Flight Land approach ceiling fallback (px) when body size is unknown.
+ * Prefer `flightLandCeiling(creature)` which scales with resting body height.
  */
-export const LAND_CEILING_FLIGHT = 105;
+export const LAND_CEILING_FLIGHT = Math.round(TYPICAL_BODY_HEIGHT * LAND_CEILING_BODY_MULT);
 
 /**
- * Jump & Land (non-flight): best single hop that returns near takeoff.
- * Hops below MIN height do not register; horizontal drift beyond TOLERANCE
- * zeroes that attempt. Only the max attempt score is kept.
+ * Jump & Land (non-flight) fallback COM rise (px) when body size is unknown.
+ * Prefer `jumpLandMinHeight(creature)`.
  */
-export const JUMP_LAND_MIN_HEIGHT = 24;
+export const JUMP_LAND_MIN_HEIGHT = Math.round(
+  TYPICAL_BODY_HEIGHT * JUMP_LAND_MIN_HEIGHT_BODY_FRAC
+);
 /** Max |landX − takeoffX| (px) for a non-zero return factor. */
 export const JUMP_LAND_RETURN_TOLERANCE = 45;
+
+/** Measure axis-aligned extent of nodes (including radii). */
+export function measureNodeExtents(
+  nodes: ReadonlyArray<{ x: number; y: number; radius: number }>
+): { width: number; height: number } {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - n.radius);
+    maxX = Math.max(maxX, n.x + n.radius);
+    minY = Math.min(minY, n.y - n.radius);
+    maxY = Math.max(maxY, n.y + n.radius);
+  }
+  if (!Number.isFinite(minX)) {
+    return { width: TYPICAL_BODY_LENGTH, height: TYPICAL_BODY_HEIGHT };
+  }
+  return {
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+/** Lowest-point clearance required before any flight reward can score. */
+export function flightRewardMinClearance(restHeight: number, restWidth: number): number {
+  const h = Number.isFinite(restHeight) && restHeight > 0 ? restHeight : TYPICAL_BODY_HEIGHT;
+  const w = Number.isFinite(restWidth) && restWidth > 0 ? restWidth : TYPICAL_BODY_LENGTH;
+  return Math.max(
+    FLIGHT_MIN_CLEARANCE_FLOOR,
+    h * FLIGHT_MIN_CLEARANCE_BODY_FRAC,
+    w * FLIGHT_MIN_CLEARANCE_SPAN_FRAC
+  );
+}
+
+/** Isolated-jump clearance floor (smaller than flight — a real hop, not a skim). */
+export function jumpRewardMinClearance(restHeight: number): number {
+  const h = Number.isFinite(restHeight) && restHeight > 0 ? restHeight : TYPICAL_BODY_HEIGHT;
+  return Math.max(JUMP_MIN_CLEARANCE, h * JUMP_MIN_CLEARANCE_BODY_FRAC);
+}
+
+/** Jump & Land minimum COM rise. */
+export function jumpLandMinHeight(restHeight: number): number {
+  const h = Number.isFinite(restHeight) && restHeight > 0 ? restHeight : TYPICAL_BODY_HEIGHT;
+  return Math.max(JUMP_LAND_MIN_HEIGHT, h * JUMP_LAND_MIN_HEIGHT_BODY_FRAC);
+}
+
+/** Flight Land climb ceiling (must reach ~1.35× body height before descent credit). */
+export function flightLandCeiling(restHeight: number): number {
+  const h = Number.isFinite(restHeight) && restHeight > 0 ? restHeight : TYPICAL_BODY_HEIGHT;
+  return Math.max(LAND_CEILING_FLIGHT, h * LAND_CEILING_BODY_MULT);
+}
+
+/** Glide corridor band: mid-height cruise relative to body size. */
+export function glideCorridorBand(restHeight: number): { min: number; max: number } {
+  const h = Number.isFinite(restHeight) && restHeight > 0 ? restHeight : TYPICAL_BODY_HEIGHT;
+  const min = Math.max(flightRewardMinClearance(h, h), h * 0.55);
+  const max = Math.max(min + 40, h * 2.2);
+  return { min, max };
+}
 
 export function paraRunwayLength(difficulty = 1): number {
   const d = clampDifficulty(difficulty);

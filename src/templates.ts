@@ -5,413 +5,1289 @@
 
 import { CreatureBlueprint } from './types';
 
+/** Built-in anatomy templates permanently shipped with the app. */
 export const CREATURE_TEMPLATES: CreatureBlueprint[] = [
   {
-    name: 'Biped Walker',
-    nodes: [
-      { id: 0, mass: 2.0, radius: 12, friction: 0.2, color: '#3b82f6' }, // Hip (Main Body)
-      { id: 1, mass: 1.0, radius: 8, friction: 0.5, color: '#60a5fa' }, // Knee Left
-      { id: 2, mass: 1.5, radius: 10, friction: 0.9, color: '#1d4ed8', isFoot: true }, // Foot Left
-      { id: 3, mass: 1.0, radius: 8, friction: 0.5, color: '#a7f3d0' }, // Knee Right
-      { id: 4, mass: 1.5, radius: 10, friction: 0.9, color: '#059669', isFoot: true }, // Foot Right
+    "name": "Sprongo",
+    "nodes": [
+      {
+        "id": 0,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 1,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 1,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
+      },
+      {
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 1,
+        "color": "#ec4899",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
+      }
     ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 45, minLength: 25, maxLength: 65, strength: 0.65, phaseOffset: 0 },
-      { id: 1, nodeA: 1, nodeB: 2, originalLength: 45, minLength: 25, maxLength: 65, strength: 0.65, phaseOffset: 0 },
-      { id: 2, nodeA: 0, nodeB: 3, originalLength: 45, minLength: 25, maxLength: 65, strength: 0.65, phaseOffset: Math.PI },
-      { id: 3, nodeA: 3, nodeB: 4, originalLength: 45, minLength: 25, maxLength: 65, strength: 0.65, phaseOffset: Math.PI },
-      // Stabilizing muscles
-      { id: 4, nodeA: 1, nodeB: 3, originalLength: 50, minLength: 35, maxLength: 65, strength: 0.3, phaseOffset: 0 },
-      { id: 5, nodeA: 0, nodeB: 2, originalLength: 85, minLength: 70, maxLength: 100, strength: 0.1, phaseOffset: 0 },
+    "muscles": [
+      {
+        "id": 0,
+        "nodeA": 2,
+        "nodeB": 0,
+        "originalLength": 95,
+        "minLength": 95,
+        "maxLength": 95,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 1,
+        "nodeA": 0,
+        "nodeB": 1,
+        "originalLength": 95,
+        "minLength": 95,
+        "maxLength": 95,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 2,
+        "nodeA": 2,
+        "nodeB": 1,
+        "originalLength": 89,
+        "minLength": 10,
+        "maxLength": 178,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      }
     ],
-    relativePositions: [
-      { x: 0, y: -90 }, // Hip (node 0)
-      { x: -20, y: -50 }, // Knee L (node 1)
-      { x: -30, y: -10 }, // Foot L (node 2)
-      { x: 20, y: -50 }, // Knee R (node 3)
-      { x: 30, y: -10 }, // Foot R (node 4)
-    ],
+    "relativePositions": [
+      {
+        "x": 180,
+        "y": -90
+      },
+      {
+        "x": 150,
+        "y": 0
+      },
+      {
+        "x": 210,
+        "y": 0
+      }
+    ]
   },
   {
-    name: 'Quadruped Runner',
-    nodes: [
-      { id: 0, mass: 2.2, radius: 12, friction: 0.3, color: '#ec4899' }, // Shoulder / Chest
-      { id: 1, mass: 2.2, radius: 12, friction: 0.3, color: '#f472b6' }, // Pelvis / Rear
-      { id: 2, mass: 1.0, radius: 8, friction: 0.7, color: '#fbcfe8' }, // Front Knee
-      { id: 3, mass: 1.2, radius: 9, friction: 0.9, color: '#db2777', isFoot: true }, // Front Foot
-      { id: 4, mass: 1.0, radius: 8, friction: 0.7, color: '#fbcfe8' }, // Rear Knee
-      { id: 5, mass: 1.2, radius: 9, friction: 0.9, color: '#be185d', isFoot: true }, // Rear Foot
+    "name": "Glide Cart",
+    "nodes": [
+      {
+        "id": 0,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#3b82f6",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 1,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#10b981",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 4,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 5,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      }
     ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 70, minLength: 40, maxLength: 95, strength: 0.7, phaseOffset: 0 }, // Spine
-      { id: 1, nodeA: 0, nodeB: 2, originalLength: 40, minLength: 25, maxLength: 55, strength: 0.6, phaseOffset: 0 }, // Front Leg Upper
-      { id: 2, nodeA: 2, nodeB: 3, originalLength: 40, minLength: 25, maxLength: 55, strength: 0.6, phaseOffset: 0.5 }, // Front Leg Lower
-      { id: 3, nodeA: 1, nodeB: 4, originalLength: 40, minLength: 25, maxLength: 55, strength: 0.6, phaseOffset: Math.PI }, // Rear Leg Upper
-      { id: 4, nodeA: 4, nodeB: 5, originalLength: 40, minLength: 25, maxLength: 55, strength: 0.6, phaseOffset: Math.PI + 0.5 }, // Rear Leg Lower
-      { id: 5, nodeA: 0, nodeB: 3, originalLength: 75, minLength: 55, maxLength: 95, strength: 0.25, phaseOffset: 0 },
-      { id: 6, nodeA: 1, nodeB: 5, originalLength: 75, minLength: 55, maxLength: 95, strength: 0.25, phaseOffset: Math.PI },
-      { id: 7, nodeA: 2, nodeB: 4, originalLength: 60, minLength: 40, maxLength: 80, strength: 0.2, phaseOffset: 0 },
+    "muscles": [
+      {
+        "id": 0,
+        "nodeA": 2,
+        "nodeB": 3,
+        "originalLength": 210,
+        "minLength": 210,
+        "maxLength": 210,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 1,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 2,
+        "nodeA": 1,
+        "nodeB": 0,
+        "originalLength": 330,
+        "minLength": 330,
+        "maxLength": 330,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 3,
+        "nodeA": 0,
+        "nodeB": 2,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 4,
+        "nodeA": 4,
+        "nodeB": 5,
+        "originalLength": 231,
+        "minLength": 198,
+        "maxLength": 462,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle",
+        "aeroType": "paraglider",
+        "aeroArea": 120
+      },
+      {
+        "id": 5,
+        "nodeA": 4,
+        "nodeB": 2,
+        "originalLength": 47,
+        "minLength": 40,
+        "maxLength": 94,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 6,
+        "nodeA": 3,
+        "nodeB": 5,
+        "originalLength": 47,
+        "minLength": 40,
+        "maxLength": 94,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      }
     ],
-    relativePositions: [
-      { x: -30, y: -70 },
-      { x: 30, y: -70 },
-      { x: -38, y: -40 },
-      { x: -42, y: -10 },
-      { x: 38, y: -40 },
-      { x: 42, y: -10 },
+    "relativePositions": [
+      {
+        "x": -150,
+        "y": -30
+      },
+      {
+        "x": 180,
+        "y": -30
+      },
+      {
+        "x": -90,
+        "y": -90
+      },
+      {
+        "x": 120,
+        "y": -90
+      },
+      {
+        "x": -150,
+        "y": -120
+      },
+      {
+        "x": 180,
+        "y": -120
+      }
     ],
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [
+          0,
+          2,
+          3,
+          1
+        ]
+      }
+    ]
   },
   {
-    name: 'Motor Cart',
-    nodes: [
-      { id: 0, mass: 2.0, radius: 11, friction: 0.2, color: '#64748b' },
-      { id: 1, mass: 2.0, radius: 11, friction: 0.2, color: '#475569' },
+    "name": "Chute Cart",
+    "nodes": [
       {
-        id: 2,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 0.55,
+        "id": 0,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#3b82f6",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
       },
       {
-        id: 3,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 0.55,
+        "id": 1,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#10b981",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
       },
+      {
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 4,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 5,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      }
     ],
-    muscles: [
-      // Rigid chassis frame
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 70, minLength: 70, maxLength: 70, strength: 1.0, phaseOffset: 0 },
-      { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 3, nodeA: 0, nodeB: 3, originalLength: 78, minLength: 78, maxLength: 78, strength: 1.0, phaseOffset: 0 },
-      { id: 4, nodeA: 1, nodeB: 2, originalLength: 78, minLength: 78, maxLength: 78, strength: 1.0, phaseOffset: 0 },
+    "muscles": [
+      {
+        "id": 0,
+        "nodeA": 2,
+        "nodeB": 3,
+        "originalLength": 210,
+        "minLength": 210,
+        "maxLength": 210,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 1,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 2,
+        "nodeA": 1,
+        "nodeB": 0,
+        "originalLength": 330,
+        "minLength": 330,
+        "maxLength": 330,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 3,
+        "nodeA": 0,
+        "nodeB": 2,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 4,
+        "nodeA": 4,
+        "nodeB": 2,
+        "originalLength": 47,
+        "minLength": 40,
+        "maxLength": 94,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 5,
+        "nodeA": 3,
+        "nodeB": 5,
+        "originalLength": 47,
+        "minLength": 40,
+        "maxLength": 94,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 6,
+        "nodeA": 4,
+        "nodeB": 5,
+        "originalLength": 231,
+        "minLength": 166,
+        "maxLength": 462,
+        "strength": 0.25,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle",
+        "aeroType": "parachute",
+        "aeroArea": 160
+      }
     ],
-    relativePositions: [
-      { x: -28, y: -38 }, // Chassis front
-      { x: 28, y: -38 }, // Chassis rear
-      { x: -32, y: -12 }, // Front wheel
-      { x: 32, y: -12 }, // Rear wheel
+    "relativePositions": [
+      {
+        "x": -150,
+        "y": -30
+      },
+      {
+        "x": 180,
+        "y": -30
+      },
+      {
+        "x": -90,
+        "y": -90
+      },
+      {
+        "x": 120,
+        "y": -90
+      },
+      {
+        "x": -150,
+        "y": -120
+      },
+      {
+        "x": 180,
+        "y": -120
+      }
     ],
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [
+          0,
+          2,
+          3,
+          1
+        ]
+      }
+    ]
   },
   {
-    name: 'Flapper',
-    nodes: [
-      { id: 0, mass: 2.2, radius: 12, friction: 0.35, color: '#0ea5e9' }, // Body
-      { id: 1, mass: 0.9, radius: 8, friction: 0.2, color: '#38bdf8' }, // Wing tip L
-      { id: 2, mass: 0.9, radius: 8, friction: 0.2, color: '#38bdf8' }, // Wing tip R
-      { id: 3, mass: 1.4, radius: 10, friction: 0.85, color: '#0369a1', isFoot: true }, // Foot
+    "name": "RoboBird",
+    "nodes": [
+      {
+        "id": 0,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 1,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 2,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#3b82f6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 4,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 5,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 6,
+        "mass": 0.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#ec4899",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      }
     ],
-    muscles: [
+    "muscles": [
       {
-        id: 0,
-        nodeA: 0,
-        nodeB: 1,
-        originalLength: 55,
-        minLength: 28,
-        maxLength: 78,
-        strength: 0.92,
-        phaseOffset: 0,
-        aeroType: 'wing',
-        aeroArea: 75,
+        "id": 0,
+        "nodeA": 1,
+        "nodeB": 2,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
       {
-        id: 1,
-        nodeA: 0,
-        nodeB: 2,
-        originalLength: 55,
-        minLength: 28,
-        maxLength: 78,
-        strength: 0.92,
-        // In-phase with left wing — bird-like symmetric flap (D143).
-        phaseOffset: 0,
-        aeroType: 'wing',
-        aeroArea: 75,
+        "id": 1,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 283,
+        "minLength": 283,
+        "maxLength": 283,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
       {
-        id: 2,
-        nodeA: 0,
-        nodeB: 3,
-        originalLength: 48,
-        minLength: 30,
-        maxLength: 62,
-        strength: 0.55,
-        phaseOffset: 0,
+        "id": 2,
+        "nodeA": 2,
+        "nodeB": 4,
+        "originalLength": 283,
+        "minLength": 283,
+        "maxLength": 283,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
       {
-        id: 3,
-        nodeA: 1,
-        nodeB: 2,
-        originalLength: 70,
-        minLength: 70,
-        maxLength: 70,
-        strength: 1.0,
-        phaseOffset: 0,
+        "id": 3,
+        "nodeA": 3,
+        "nodeB": 0,
+        "originalLength": 207,
+        "minLength": 177,
+        "maxLength": 413,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle",
+        "aeroType": "wing",
+        "aeroArea": 100
       },
+      {
+        "id": 4,
+        "nodeA": 0,
+        "nodeB": 4,
+        "originalLength": 207,
+        "minLength": 177,
+        "maxLength": 413,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle",
+        "aeroType": "wing",
+        "aeroArea": 100
+      },
+      {
+        "id": 5,
+        "nodeA": 1,
+        "nodeB": 5,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 6,
+        "nodeA": 2,
+        "nodeB": 6,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 7,
+        "nodeA": 0,
+        "nodeB": 5,
+        "originalLength": 138,
+        "minLength": 148,
+        "maxLength": 276,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "piston",
+        "extendRate": 32,
+        "retractRate": 32
+      },
+      {
+        "id": 8,
+        "nodeA": 0,
+        "nodeB": 6,
+        "originalLength": 138,
+        "minLength": 148,
+        "maxLength": 276,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "piston",
+        "extendRate": 32,
+        "retractRate": 32
+      },
+      {
+        "id": 9,
+        "nodeA": 5,
+        "nodeB": 6,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 10,
+        "nodeA": 3,
+        "nodeB": 5,
+        "originalLength": 256,
+        "minLength": 256,
+        "maxLength": 256,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 11,
+        "nodeA": 6,
+        "nodeB": 4,
+        "originalLength": 256,
+        "minLength": 256,
+        "maxLength": 256,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      }
     ],
-    relativePositions: [
-      { x: 0, y: -70 },
-      { x: -55, y: -95 },
-      { x: 55, y: -95 },
-      { x: 0, y: -22 },
+    "relativePositions": [
+      {
+        "x": 0,
+        "y": -300
+      },
+      {
+        "x": -30,
+        "y": -30
+      },
+      {
+        "x": 30,
+        "y": -30
+      },
+      {
+        "x": -270,
+        "y": -180
+      },
+      {
+        "x": 270,
+        "y": -180
+      },
+      {
+        "x": -30,
+        "y": -90
+      },
+      {
+        "x": 30,
+        "y": -90
+      }
     ],
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [
+          1,
+          2,
+          5,
+          6
+        ]
+      }
+    ]
   },
   {
-    name: 'Para Cart',
-    nodes: [
-      { id: 0, mass: 1.6, radius: 10, friction: 0.2, color: '#64748b' },
-      { id: 1, mass: 1.6, radius: 10, friction: 0.2, color: '#475569' },
+    "name": "Tool Eggs",
+    "nodes": [
       {
-        id: 2,
-        mass: 1.2,
-        radius: 11,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 2.2,
+        "id": 0,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
       },
       {
-        id: 3,
-        mass: 1.2,
-        radius: 11,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 2.2,
+        "id": 1,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
       },
-      { id: 4, mass: 0.45, radius: 6, friction: 0.08, color: '#a78bfa' },
-      { id: 5, mass: 0.45, radius: 6, friction: 0.08, color: '#8b5cf6' },
-    ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 58, minLength: 58, maxLength: 58, strength: 1.0, phaseOffset: 0 },
-      { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 3, nodeA: 0, nodeB: 3, originalLength: 66, minLength: 66, maxLength: 66, strength: 1.0, phaseOffset: 0 },
-      { id: 4, nodeA: 1, nodeB: 2, originalLength: 66, minLength: 66, maxLength: 66, strength: 1.0, phaseOffset: 0 },
-      // Near-rigid risers matched to spawn span (chassis→sail ≈ 78px)
-      { id: 5, nodeA: 0, nodeB: 4, originalLength: 78, minLength: 74, maxLength: 82, strength: 0.95, phaseOffset: 0 },
-      { id: 6, nodeA: 1, nodeB: 5, originalLength: 78, minLength: 74, maxLength: 82, strength: 0.95, phaseOffset: 0 },
       {
-        id: 7,
-        nodeA: 4,
-        nodeB: 5,
-        originalLength: 100,
-        minLength: 90,
-        maxLength: 110,
-        strength: 0.75,
-        phaseOffset: 0,
-        aeroType: 'paraglider',
-        aeroArea: 160,
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
       },
+      {
+        "id": 3,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 4,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
+      },
+      {
+        "id": 5,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
+      },
+      {
+        "id": 6,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 7,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 8,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 9,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#ec4899",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      }
     ],
-    relativePositions: [
-      { x: -24, y: -34 },
-      { x: 24, y: -34 },
-      { x: -28, y: -11 },
-      { x: 28, y: -11 },
-      { x: -50, y: -108 },
-      { x: 50, y: -108 },
+    "muscles": [
+      {
+        "id": 0,
+        "nodeA": 0,
+        "nodeB": 1,
+        "originalLength": 180,
+        "minLength": 180,
+        "maxLength": 180,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 1,
+        "nodeA": 1,
+        "nodeB": 3,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 2,
+        "nodeA": 3,
+        "nodeB": 2,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 3,
+        "nodeA": 2,
+        "nodeB": 0,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 4,
+        "nodeA": 6,
+        "nodeB": 4,
+        "originalLength": 90,
+        "minLength": 90,
+        "maxLength": 90,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 5,
+        "nodeA": 4,
+        "nodeB": 7,
+        "originalLength": 108,
+        "minLength": 108,
+        "maxLength": 108,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 6,
+        "nodeA": 7,
+        "nodeB": 6,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 7,
+        "nodeA": 9,
+        "nodeB": 8,
+        "originalLength": 60,
+        "minLength": 60,
+        "maxLength": 60,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 8,
+        "nodeA": 8,
+        "nodeB": 5,
+        "originalLength": 108,
+        "minLength": 108,
+        "maxLength": 108,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 9,
+        "nodeA": 5,
+        "nodeB": 9,
+        "originalLength": 90,
+        "minLength": 90,
+        "maxLength": 90,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 10,
+        "nodeA": 0,
+        "nodeB": 6,
+        "originalLength": 108,
+        "minLength": 108,
+        "maxLength": 108,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 11,
+        "nodeA": 2,
+        "nodeB": 7,
+        "originalLength": 67,
+        "minLength": 67,
+        "maxLength": 67,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 12,
+        "nodeA": 3,
+        "nodeB": 8,
+        "originalLength": 67,
+        "minLength": 67,
+        "maxLength": 67,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 13,
+        "nodeA": 1,
+        "nodeB": 9,
+        "originalLength": 108,
+        "minLength": 108,
+        "maxLength": 108,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 14,
+        "nodeA": 9,
+        "nodeB": 0,
+        "originalLength": 179,
+        "minLength": 154,
+        "maxLength": 358,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 15,
+        "nodeA": 6,
+        "nodeB": 1,
+        "originalLength": 179,
+        "minLength": 154,
+        "maxLength": 358,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 16,
+        "nodeA": 7,
+        "nodeB": 8,
+        "originalLength": 126,
+        "minLength": 108,
+        "maxLength": 252,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      }
     ],
+    "relativePositions": [
+      {
+        "x": -90,
+        "y": -180
+      },
+      {
+        "x": 90,
+        "y": -180
+      },
+      {
+        "x": -30,
+        "y": -120
+      },
+      {
+        "x": 30,
+        "y": -120
+      },
+      {
+        "x": -150,
+        "y": 0
+      },
+      {
+        "x": 150,
+        "y": 0
+      },
+      {
+        "x": -150,
+        "y": -90
+      },
+      {
+        "x": -90,
+        "y": -90
+      },
+      {
+        "x": 90,
+        "y": -90
+      },
+      {
+        "x": 150,
+        "y": -90
+      }
+    ],
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [
+          2,
+          0,
+          3,
+          1
+        ]
+      },
+      {
+        "id": "solid-2",
+        "nodeIds": [
+          6,
+          7,
+          4
+        ]
+      },
+      {
+        "id": "solid-3",
+        "nodeIds": [
+          8,
+          9,
+          5
+        ]
+      }
+    ]
   },
   {
-    name: 'Jump Cart',
-    // Wide high-power chassis that clears the Para Ramp pit when fast enough
-    // (reference: user Jump_Cart_elite_gen16 on PARA_RAMP_GLIDE).
-    nodes: [
-      { id: 0, mass: 2.0, radius: 11, friction: 0.2, color: '#64748b' },
-      { id: 1, mass: 2.0, radius: 11, friction: 0.2, color: '#475569' },
+    "name": "Motor Cart",
+    "nodes": [
       {
-        id: 2,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 20,
+        "id": 0,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#3b82f6",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
       },
       {
-        id: 3,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 20,
+        "id": 1,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#10b981",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
       },
+      {
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#10b981",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      }
     ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 2, originalLength: 108, minLength: 108, maxLength: 108, strength: 1.0, phaseOffset: 0 },
-      { id: 1, nodeA: 1, nodeB: 3, originalLength: 108, minLength: 108, maxLength: 108, strength: 1.0, phaseOffset: 0 },
-      { id: 2, nodeA: 0, nodeB: 3, originalLength: 162, minLength: 162, maxLength: 162, strength: 1.0, phaseOffset: 0 },
-      { id: 3, nodeA: 1, nodeB: 2, originalLength: 162, minLength: 162, maxLength: 162, strength: 1.0, phaseOffset: 0 },
+    "muscles": [
       {
-        id: 4,
-        nodeA: 0,
-        nodeB: 1,
-        originalLength: 60,
-        minLength: 36,
-        maxLength: 84,
-        strength: 0.6,
-        phaseOffset: 0,
-      },
-      { id: 5, nodeA: 2, nodeB: 3, originalLength: 240, minLength: 240, maxLength: 240, strength: 1.0, phaseOffset: 0 },
-    ],
-    relativePositions: [
-      { x: -30, y: -60 },
-      { x: 30, y: -60 },
-      { x: -120, y: 0 },
-      { x: 120, y: 0 },
-    ],
-  },
-  {
-    name: 'Baseline Glider',
-    // Phase 3 known-good passive glider: near-rigid cart + moderate tip mass
-    // (F09). Fixed morphology for Test 4 incidence / launch sweeps. Motors are
-    // mild so scripted flat-ground run-up can prove controllability without the
-    // ultra-light Proven Glider tip ratio.
-    nodes: [
-      { id: 0, mass: 1.8, radius: 10, friction: 0.2, color: '#475569' },
-      { id: 1, mass: 1.8, radius: 10, friction: 0.2, color: '#334155' },
-      {
-        id: 2,
-        mass: 1.3,
-        radius: 11,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 2.4,
+        "id": 0,
+        "nodeA": 2,
+        "nodeB": 3,
+        "originalLength": 210,
+        "minLength": 210,
+        "maxLength": 210,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
       {
-        id: 3,
-        mass: 1.3,
-        radius: 11,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 2.4,
-      },
-      { id: 4, mass: 0.45, radius: 6, friction: 0.06, color: '#a78bfa' },
-      { id: 5, mass: 0.45, radius: 6, friction: 0.06, color: '#7c3aed' },
-    ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 58, minLength: 58, maxLength: 58, strength: 1.0, phaseOffset: 0 },
-      { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1.0, phaseOffset: 0 },
-      { id: 3, nodeA: 0, nodeB: 3, originalLength: 66, minLength: 66, maxLength: 66, strength: 1.0, phaseOffset: 0 },
-      { id: 4, nodeA: 1, nodeB: 2, originalLength: 66, minLength: 66, maxLength: 66, strength: 1.0, phaseOffset: 0 },
-      { id: 5, nodeA: 0, nodeB: 4, originalLength: 78, minLength: 74, maxLength: 82, strength: 0.98, phaseOffset: 0 },
-      { id: 6, nodeA: 1, nodeB: 5, originalLength: 78, minLength: 74, maxLength: 82, strength: 0.98, phaseOffset: 0 },
-      { id: 7, nodeA: 0, nodeB: 5, originalLength: 92, minLength: 88, maxLength: 96, strength: 0.95, phaseOffset: 0 },
-      { id: 8, nodeA: 1, nodeB: 4, originalLength: 92, minLength: 88, maxLength: 96, strength: 0.95, phaseOffset: 0 },
-      {
-        id: 9,
-        nodeA: 4,
-        nodeB: 5,
-        originalLength: 100,
-        minLength: 92,
-        maxLength: 108,
-        strength: 0.85,
-        phaseOffset: 0,
-        aeroType: 'paraglider',
-        aeroArea: 160,
-      },
-    ],
-    relativePositions: [
-      { x: -24, y: -34 },
-      { x: 24, y: -34 },
-      { x: -28, y: -11 },
-      { x: 28, y: -11 },
-      { x: -50, y: -108 },
-      { x: 50, y: -108 },
-    ],
-  },
-  {
-    name: 'Proven Glider',
-    // Jump Cart chassis + light reefable canopy — reefed run-up must clear the pit
-    // ballistically before deploy opens the sail. Keep light tips as advanced
-    // (F09); Baseline Glider is the Phase 3 known-good reference.
-    nodes: [
-      { id: 0, mass: 2.0, radius: 11, friction: 0.2, color: '#334155' },
-      { id: 1, mass: 2.0, radius: 11, friction: 0.2, color: '#1e293b' },
-      {
-        id: 2,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 20,
+        "id": 1,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
       {
-        id: 3,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 20,
+        "id": 2,
+        "nodeA": 1,
+        "nodeB": 0,
+        "originalLength": 330,
+        "minLength": 330,
+        "maxLength": 330,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       },
-      // Light canopy tips (heavy tips bleed lip speed into the pit)
-      { id: 4, mass: 0.05, radius: 5, friction: 0.05, color: '#c4b5fd' },
-      { id: 5, mass: 0.05, radius: 5, friction: 0.05, color: '#8b5cf6' },
-    ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 2, originalLength: 108, minLength: 108, maxLength: 108, strength: 1.0, phaseOffset: 0 },
-      { id: 1, nodeA: 1, nodeB: 3, originalLength: 108, minLength: 108, maxLength: 108, strength: 1.0, phaseOffset: 0 },
-      { id: 2, nodeA: 0, nodeB: 3, originalLength: 162, minLength: 162, maxLength: 162, strength: 1.0, phaseOffset: 0 },
-      { id: 3, nodeA: 1, nodeB: 2, originalLength: 162, minLength: 162, maxLength: 162, strength: 1.0, phaseOffset: 0 },
       {
-        id: 4,
-        nodeA: 0,
-        nodeB: 1,
-        originalLength: 60,
-        minLength: 36,
-        maxLength: 84,
-        strength: 0.6,
-        phaseOffset: 0,
-      },
-      { id: 5, nodeA: 2, nodeB: 3, originalLength: 240, minLength: 240, maxLength: 240, strength: 1.0, phaseOffset: 0 },
-      // Compact risers so reefed tips stay close to the cart
-      { id: 6, nodeA: 0, nodeB: 4, originalLength: 74, minLength: 74, maxLength: 74, strength: 1.0, phaseOffset: 0 },
-      { id: 7, nodeA: 1, nodeB: 5, originalLength: 74, minLength: 74, maxLength: 74, strength: 1.0, phaseOffset: 0 },
-      { id: 8, nodeA: 0, nodeB: 5, originalLength: 110, minLength: 110, maxLength: 110, strength: 1.0, phaseOffset: 0 },
-      { id: 9, nodeA: 1, nodeB: 4, originalLength: 110, minLength: 110, maxLength: 110, strength: 1.0, phaseOffset: 0 },
+        "id": 3,
+        "nodeA": 0,
+        "nodeB": 2,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      }
+    ],
+    "relativePositions": [
       {
-        id: 10,
-        nodeA: 4,
-        nodeB: 5,
-        originalLength: 110,
-        minLength: 95,
-        maxLength: 120,
-        strength: 0.8,
-        phaseOffset: 0,
-        aeroType: 'paraglider',
-        aeroArea: 160,
+        "x": -150,
+        "y": -30
       },
+      {
+        "x": 180,
+        "y": -30
+      },
+      {
+        "x": -90,
+        "y": -90
+      },
+      {
+        "x": 120,
+        "y": -90
+      }
     ],
-    relativePositions: [
-      { x: -30, y: -60 },
-      { x: 30, y: -60 },
-      { x: -120, y: 0 },
-      { x: 120, y: 0 },
-      { x: -55, y: -130 },
-      { x: 55, y: -130 },
-    ],
-  },
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [
+          0,
+          2,
+          3,
+          1
+        ]
+      }
+    ]
+  }
 ];

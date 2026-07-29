@@ -304,7 +304,27 @@ export function sampleParagliderClCdTable(
   return rows;
 }
 
-type WingMuscle = PhysicsMuscle & { _prevTarget?: number };
+type WingMuscle = PhysicsMuscle & {
+  _prevTarget?: number;
+  _strokeAccum?: number;
+  _strokeFrames?: number;
+  _strokeDir?: number;
+  _prevTipRelY?: number;
+  _reversals?: number[];
+};
+
+const MIN_STROKE_SWEEP = 18;
+const FULL_STROKE_SWEEP = 60;
+const MIN_STROKE_FRAMES = 3;
+const STROKE_RESET_FRAMES = 2;
+const REVERSAL_WINDOW = 20;
+const MAX_REVERSAL_RATE = 0.3;
+
+function strokeSweepRamp(accum: number): number {
+  if (accum <= MIN_STROKE_SWEEP) return 0;
+  if (accum >= FULL_STROKE_SWEEP) return 1;
+  return (accum - MIN_STROKE_SWEEP) / (FULL_STROKE_SWEEP - MIN_STROKE_SWEEP);
+}
 
 /** Per-wing stroke snapshot used for L/R pair scoring (D143). */
 export type WingStrokeState = {
@@ -318,6 +338,7 @@ export type WingStrokeState = {
   flapping: boolean;
   downstroke: boolean;
   strokeAuthority: number;
+  sweepFraction: number;
 };
 
 /**
@@ -330,6 +351,8 @@ export function wingPairBirdScore(left: WingStrokeState, right: WingStrokeState)
   if (!left.flapping && !right.flapping && left.strokeVy < 0.12 && right.strokeVy < 0.12) {
     return 0;
   }
+  const meanSweep = 0.5 * (left.sweepFraction + right.sweepFraction);
+  if (meanSweep < 0.1) return 0;
   const meanAuth = 0.5 * (left.strokeAuthority + right.strokeAuthority);
   const authMatch =
     1 - Math.min(1, Math.abs(left.strokeAuthority - right.strokeAuthority) / Math.max(0.35, meanAuth));
@@ -339,7 +362,7 @@ export function wingPairBirdScore(left: WingStrokeState, right: WingStrokeState)
       ? 0.65
       : 1 - Math.min(1, Math.abs(left.cmdDelta - right.cmdDelta) / Math.max(0.2, meanCmd));
   const tipLevel = 1 - Math.min(1, Math.abs(left.tip.y - right.tip.y) / 45);
-  return Math.max(0, Math.min(1, 0.5 * authMatch + 0.28 * cmdMatch + 0.22 * tipLevel));
+  return Math.max(0, Math.min(1, (0.4 * authMatch + 0.22 * cmdMatch + 0.18 * tipLevel + 0.2 * meanSweep)));
 }
 
 /**
@@ -392,24 +415,78 @@ export function applyWingForces(creature: Creature) {
     const prevTarget = wing._prevTarget ?? muscle.targetLength;
     const cmdDelta = prevTarget - muscle.targetLength;
     wing._prevTarget = muscle.targetLength;
-    const flapping = Math.abs(cmdDelta) > 0.12;
+
+    const da = Math.hypot(a.x - comX, a.y - comY);
+    const db = Math.hypot(b.x - comX, b.y - comY);
+    const tip = da >= db ? a : b;
+
+    // --- Stroke accumulator: track cumulative tip sweep ---
+    const tipRelY = tip.y - comY;
+    const prevTipRelY = wing._prevTipRelY ?? tipRelY;
+    wing._prevTipRelY = tipRelY;
+    const tipDeltaY = tipRelY - prevTipRelY;
+
+    let strokeDir = wing._strokeDir ?? 0;
+    let strokeAccum = wing._strokeAccum ?? 0;
+    let strokeFrames = wing._strokeFrames ?? 0;
+
+    const frameDir = tipDeltaY > 0.5 ? 1 : tipDeltaY < -0.5 ? -1 : 0;
+
+    if (frameDir !== 0 && frameDir === strokeDir) {
+      strokeAccum += Math.abs(tipDeltaY);
+      strokeFrames += 1;
+    } else if (frameDir !== 0 && frameDir !== strokeDir) {
+      // Direction changed — track reversal
+      const reversals = wing._reversals ?? [];
+      reversals.push(1);
+      if (reversals.length > REVERSAL_WINDOW) reversals.shift();
+      wing._reversals = reversals;
+
+      if (strokeDir !== 0 && strokeFrames < STROKE_RESET_FRAMES) {
+        // Very brief opposite blip — don't reset yet, just stall
+        strokeFrames = 0;
+      } else {
+        strokeDir = frameDir;
+        strokeAccum = Math.abs(tipDeltaY);
+        strokeFrames = 1;
+      }
+    } else {
+      // Neutral frame — decay slightly but don't reset
+      const reversals = wing._reversals ?? [];
+      reversals.push(0);
+      if (reversals.length > REVERSAL_WINDOW) reversals.shift();
+      wing._reversals = reversals;
+    }
+
+    wing._strokeDir = strokeDir;
+    wing._strokeAccum = strokeAccum;
+    wing._strokeFrames = strokeFrames;
+
+    // Vibration suppression: high reversal rate kills lift
+    const reversals = wing._reversals ?? [];
+    const reversalCount = reversals.reduce((s, v) => s + v, 0);
+    const reversalRate = reversals.length > 4 ? reversalCount / reversals.length : 0;
+    const vibrationSuppression = reversalRate > MAX_REVERSAL_RATE
+      ? Math.max(0, 1 - (reversalRate - MAX_REVERSAL_RATE) / 0.3)
+      : 1;
+
+    const sweepFraction = strokeSweepRamp(strokeAccum) * vibrationSuppression;
+    const downstroke = strokeDir > 0 && strokeFrames >= MIN_STROKE_FRAMES
+      && strokeAccum >= MIN_STROKE_SWEEP && vibrationSuppression > 0.05;
+
+    const seg = segmentVelocity(a, b);
+    const strokeVy = seg.vy - comVy;
+    const flapping = downstroke && Math.abs(cmdDelta) > 0.12;
     if (flapping) {
       creature.wingFlapFrames = (creature.wingFlapFrames ?? 0) + 1;
       creature.wingFlapWork = (creature.wingFlapWork ?? 0) + Math.abs(cmdDelta);
     }
 
-    const seg = segmentVelocity(a, b);
-    const strokeVy = seg.vy - comVy;
-    const commandedPower = cmdDelta > 0.12;
-    const kinematicPower = strokeVy > 0.1;
-    const downstroke = commandedPower || kinematicPower;
     const strokeAuthority = Math.min(
       1.65,
-      0.75 + Math.max(0, strokeVy) * 0.28 + Math.max(0, cmdDelta) * 0.015
+      (0.75 + Math.max(0, strokeVy) * 0.28 + Math.max(0, cmdDelta) * 0.015) * sweepFraction
     );
-    const da = Math.hypot(a.x - comX, a.y - comY);
-    const db = Math.hypot(b.x - comX, b.y - comY);
-    const tip = da >= db ? a : b;
+
     strokes.push({
       muscle: wing,
       a,
@@ -421,6 +498,7 @@ export function applyWingForces(creature: Creature) {
       flapping,
       downstroke,
       strokeAuthority,
+      sweepFraction,
     });
   }
 
@@ -467,8 +545,9 @@ export function applyWingForces(creature: Creature) {
     const area = effectiveAeroArea(muscle);
     const q = speed * speed;
 
-    if (!flapping || !downstroke || facing < 0.08) {
-      const drag = area * (flapping ? 0.0007 : 0.0009) * q * (0.15 + 0.85 * facing);
+    if (!downstroke || facing < 0.08) {
+      const moving = Math.abs(stroke.cmdDelta) > 0.12;
+      const drag = area * (moving ? 0.0007 : 0.0009) * q * (0.15 + 0.85 * facing);
       applySegmentImpulse(a, b, -(vx / speed) * drag, -(vy / speed) * drag, MAX_WING_FORCE * 0.55);
       continue;
     }

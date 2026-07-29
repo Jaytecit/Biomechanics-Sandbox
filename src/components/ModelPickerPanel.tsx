@@ -116,13 +116,16 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
     [finishedModels]
   );
 
-  const untrainedSorted = useMemo(
-    () =>
-      [...packages].sort(
-        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-      ),
-    [packages]
-  );
+  const untrainedSorted = useMemo(() => {
+    const list = [...packages];
+    list.sort((a, b) => {
+      const aBuiltin = a.id.startsWith('builtin_pkg_') ? 0 : 1;
+      const bBuiltin = b.id.startsWith('builtin_pkg_') ? 0 : 1;
+      if (aBuiltin !== bBuiltin) return aBuiltin - bBuiltin;
+      return a.displayName.localeCompare(b.displayName);
+    });
+    return list;
+  }, [packages]);
 
   // Drop checks for models that no longer exist.
   useEffect(() => {
@@ -216,11 +219,17 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
     });
   };
 
+  const customUntrained = useMemo(
+    () => untrainedSorted.filter(p => !p.id.startsWith('builtin_pkg_')),
+    [untrainedSorted]
+  );
+
   const checkedCount = checkedShelfIds.size + checkedPackageIds.size;
   const allShelfChecked =
     shelfSorted.length > 0 && shelfSorted.every(m => checkedShelfIds.has(m.id));
   const allUntrainedChecked =
-    untrainedSorted.length > 0 && untrainedSorted.every(p => checkedPackageIds.has(p.id));
+    customUntrained.length > 0 &&
+    customUntrained.every(p => checkedPackageIds.has(p.id));
 
   const toggleAllShelf = () => {
     if (allShelfChecked) {
@@ -234,7 +243,7 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
     if (allUntrainedChecked) {
       setCheckedPackageIds(new Set());
     } else {
-      setCheckedPackageIds(new Set(untrainedSorted.map(p => p.id)));
+      setCheckedPackageIds(new Set(customUntrained.map(p => p.id)));
     }
   };
 
@@ -245,14 +254,15 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
 
   const deleteTargets = useMemo(() => {
     if (checkedCount > 0) {
+      const packageIds = [...checkedPackageIds].filter(id => !id.startsWith('builtin_pkg_'));
       return {
         mode: 'batch' as const,
         shelfIds: [...checkedShelfIds],
-        packageIds: [...checkedPackageIds],
+        packageIds,
         names: [
           ...shelfSorted.filter(m => checkedShelfIds.has(m.id)).map(m => m.name),
           ...untrainedSorted
-            .filter(p => checkedPackageIds.has(p.id))
+            .filter(p => packageIds.includes(p.id))
             .map(p => p.displayName),
         ],
       };
@@ -265,7 +275,7 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
         names: [selection.model.name],
       };
     }
-    if (selection?.kind === 'untrained') {
+    if (selection?.kind === 'untrained' && !selection.pkg.id.startsWith('builtin_pkg_')) {
       return {
         mode: 'single' as const,
         shelfIds: [] as string[],
@@ -492,7 +502,8 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                 <button
                   type="button"
                   onClick={startRename}
-                  className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  disabled={selection?.kind === 'untrained' && selection.pkg.id.startsWith('builtin_pkg_')}
+                  className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
                   title="Rename"
                 >
                   <Pencil className="h-3.5 w-3.5" /> Rename
@@ -688,7 +699,7 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                 Untrained models ({untrainedSorted.length})
               </summary>
               <div className="space-y-1 px-1.5 pb-2">
-                {untrainedSorted.length > 0 && (
+                {customUntrained.length > 0 && (
                   <label className="flex items-center gap-2 px-1.5 py-1 text-[10px] font-semibold text-slate-600 cursor-pointer">
                     <input
                       type="checkbox"
@@ -696,18 +707,19 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                       onChange={toggleAllUntrained}
                       className="rounded border-slate-300"
                     />
-                    Select all untrained
+                    Select all custom untrained
                   </label>
                 )}
                 {untrainedSorted.length === 0 ? (
                   <p className="px-1.5 py-1 text-[10px] leading-relaxed text-slate-500">
-                    No saved bodies yet. Open Anatomy Studio and save a creature package.
+                    No body templates yet.
                   </p>
                 ) : (
                   untrainedSorted.map(pkg => {
                     const active =
                       selection?.kind === 'untrained' && selection.pkg.id === pkg.id;
                     const checked = checkedPackageIds.has(pkg.id);
+                    const isBuiltin = pkg.id.startsWith('builtin_pkg_');
                     return (
                       <div
                         key={pkg.id}
@@ -729,6 +741,7 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                             onChange={() => togglePackageChecked(pkg.id)}
                             className="rounded border-slate-300"
                             aria-label={`Select ${pkg.displayName}`}
+                            disabled={isBuiltin}
                           />
                         </label>
                         <button
@@ -738,10 +751,15 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                         >
                           <div className="truncate text-[12px] font-bold text-slate-800">
                             {pkg.displayName}
+                            {isBuiltin ? (
+                              <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                                default
+                              </span>
+                            ) : null}
                           </div>
                           <div className="mt-0.5 text-[10px] text-slate-500">
-                            Rev {pkg.revision} · {pkg.blueprint.nodes.length}n /{' '}
-                            {pkg.blueprint.muscles.length}m
+                            {isBuiltin ? 'Body only' : `Rev ${pkg.revision}`} ·{' '}
+                            {pkg.blueprint.nodes.length}n / {pkg.blueprint.muscles.length}m
                             {pkg.controllers.length > 0
                               ? ` · ${pkg.controllers.length} ctrl`
                               : ''}

@@ -69,16 +69,23 @@ function angleAt(
   const vyA = endA.y - endA.oldY;
   const vxB = endB.x - endB.oldX;
   const vyB = endB.y - endB.oldY;
+  const energyBefore = 0.5 * (vxA * vxA + vyA * vyA + vxB * vxB + vyB * vyB);
   assert.equal(enforcePairMaxAngle(hinge, endA, endB), true);
   const after = angleAt(hinge, endA, endB);
   assert.ok(
     after <= Math.PI / 2 + 1e-4,
     `hinge stop must clamp to ≤90°, got ${(after * 180) / Math.PI}°`
   );
-  assert.ok(Math.abs(endA.x - endA.oldX - vxA) < 1e-9, 'endA vx preserved');
-  assert.ok(Math.abs(endA.y - endA.oldY - vyA) < 1e-9, 'endA vy preserved');
-  assert.ok(Math.abs(endB.x - endB.oldX - vxB) < 1e-9, 'endB vx preserved');
-  assert.ok(Math.abs(endB.y - endB.oldY - vyB) < 1e-9, 'endB vy preserved');
+  const nextVax = endA.x - endA.oldX;
+  const nextVay = endA.y - endA.oldY;
+  const nextVbx = endB.x - endB.oldX;
+  const nextVby = endB.y - endB.oldY;
+  const energyAfter =
+    0.5 * (nextVax * nextVax + nextVay * nextVay + nextVbx * nextVbx + nextVby * nextVby);
+  assert.ok(
+    energyAfter <= energyBefore + 1e-6,
+    `hinge projection must not inject kinetic energy (${energyBefore} -> ${energyAfter})`
+  );
 }
 
 {

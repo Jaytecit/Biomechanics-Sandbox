@@ -53,6 +53,76 @@ const VISUALIZER_ZOOM_STEP = 0.05;
 const VISUALIZER_ZOOM_MIN = 0.05;
 const VISUALIZER_ZOOM_MAX = 1.0;
 
+/** Tick spacing for the left-edge height ruler (world px), scaled by zoom. */
+function heightRulerIntervals(zoom: number): { minor: number; major: number } {
+  if (zoom >= 0.7) return { minor: 25, major: 50 };
+  if (zoom >= 0.35) return { minor: 50, major: 100 };
+  if (zoom >= 0.15) return { minor: 100, major: 200 };
+  if (zoom >= 0.08) return { minor: 200, major: 500 };
+  return { minor: 500, major: 1000 };
+}
+
+/**
+ * Screen-space height ruler along the left edge of the sim visualizer.
+ * Labels are world px above GROUND_Y so creature / flight height is readable at any zoom.
+ */
+function drawSimHeightRuler(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  camY: number,
+  zoom: number,
+  groundY: number
+) {
+  const centerY = canvasHeight / 2;
+  const worldToScreenY = (wy: number) => centerY + (wy - camY - centerY) * zoom;
+  const screenToWorldY = (sy: number) => camY + centerY + (sy - centerY) / zoom;
+
+  const groundSy = worldToScreenY(groundY);
+  const maxH = Math.max(0, groundY - screenToWorldY(0));
+  const minH = Math.min(0, groundY - screenToWorldY(canvasHeight));
+  const { minor, major } = heightRulerIntervals(zoom);
+  const rulerWidth = 46;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.58)';
+  ctx.fillRect(0, 0, rulerWidth, canvasHeight);
+  ctx.strokeStyle = 'rgba(71, 85, 105, 0.9)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(rulerWidth - 0.5, 0);
+  ctx.lineTo(rulerWidth - 0.5, canvasHeight);
+  ctx.stroke();
+
+  const hStart = Math.floor(minH / minor) * minor;
+  const hEnd = Math.ceil(maxH / minor) * minor;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let h = hStart; h <= hEnd; h += minor) {
+    if (h < 0) continue;
+    const sy = groundSy - h * zoom;
+    if (sy < -6 || sy > canvasHeight + 6) continue;
+    const isMajor = h % major === 0;
+    ctx.strokeStyle = isMajor ? '#94a3b8' : '#64748b';
+    ctx.beginPath();
+    ctx.moveTo(isMajor ? 28 : 34, sy);
+    ctx.lineTo(rulerWidth - 1, sy);
+    ctx.stroke();
+    if (isMajor) {
+      ctx.fillStyle = h === 0 ? '#f87171' : '#e2e8f0';
+      ctx.font = 'bold 9px ui-sans-serif, system-ui';
+      ctx.fillText(`${h}`, 26, sy);
+    }
+  }
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = 'bold 8px ui-sans-serif, system-ui';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('H px', 6, 6);
+  ctx.restore();
+}
+
 function backdropHash2(ix: number, iy: number, salt = 0): number {
   return backdropHash(ix * 73856093 ^ iy * 19349663, salt);
 }
@@ -312,7 +382,8 @@ function drawMotionBackdrop(
     const labelY = Math.max(bgTop + 24, Math.min(bgBottom - 24, viewMidY));
     ctx.fillStyle = 'rgba(67, 56, 202, 0.45)';
     ctx.font = 'bold 11px ui-sans-serif, system-ui';
-    ctx.fillText(`↑ ${Math.round(altitude)} px`, bgLeft + 16, labelY);
+    // Keep clear of the screen-space height ruler on the left edge
+    ctx.fillText(`↑ ${Math.round(altitude)} px`, bgLeft + 70, labelY);
   }
 }
 
@@ -337,6 +408,14 @@ interface VisualizerProps {
   className?: string;
   /** Bottom-left run controls overlay */
   simulationSpeed?: number;
+  effectiveSimulationSpeed?: number;
+  simStepsPerSecond?: number;
+  autoThrottleActive?: boolean;
+  currentGen?: number;
+  elapsedSeconds?: number;
+  generationDuration?: number;
+  currentModelBestLabel?: string;
+  onResetGoalBestEver?: () => void;
   onToggleRun?: () => void;
   onManualBreed?: () => void;
   onResetSimulation?: () => void;
@@ -360,6 +439,14 @@ export const Visualizer: React.FC<VisualizerProps> = ({
   fillHeight = false,
   className = '',
   simulationSpeed = 1,
+  effectiveSimulationSpeed = simulationSpeed,
+  simStepsPerSecond = 0,
+  autoThrottleActive = false,
+  currentGen = 1,
+  elapsedSeconds = 0,
+  generationDuration = 0,
+  currentModelBestLabel = '0',
+  onResetGoalBestEver,
   onToggleRun,
   onManualBreed,
   onResetSimulation,
@@ -1117,6 +1204,9 @@ export const Visualizer: React.FC<VisualizerProps> = ({
       }
 
       ctx.restore();
+
+      drawSimHeightRuler(ctx, dimensions.width, dimensions.height, camY, zoom, GROUND_Y);
+
       if (measurePerformance) {
         recordRendererFrame(performance.now() - renderStartedAt, sortedCreatures.length);
       }
@@ -1204,77 +1294,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           </div>
         </div>
         <div
-          className={`pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 max-w-[42%] ${
-            fillHeight ? 'px-1.5 py-0.5' : 'px-2.5 py-1'
-          }`}
-          title={
-            goalBestEver
-              ? `Best ever for ${goalInfo.title}: ${goalBestEver.scoreLabel}${
-                  goalBestEver.durationLabel ? ` @ ${goalBestEver.durationLabel}` : ''
-                } by ${goalBestEver.modelName}`
-              : `No score recorded for ${goalInfo.title} yet — scores update as the run finds a new best`
-          }
-        >
-          <Award
-            className={`shrink-0 text-emerald-600 ${fillHeight ? 'w-3 h-3' : 'w-3.5 h-3.5'}`}
-          />
-          <span
-            className={`font-bold uppercase tracking-wide text-emerald-700 whitespace-nowrap ${
-              fillHeight ? 'text-[9px]' : 'text-[10px]'
-            }`}
-          >
-            Best Ever
-          </span>
-          {goalBestEver ? (
-            <>
-              <span
-                className={`font-bold tabular-nums text-emerald-900 whitespace-nowrap ${
-                  fillHeight ? 'text-[10px]' : 'text-xs'
-                }`}
-              >
-                {goalBestEver.scoreLabel}
-              </span>
-              {goalBestEver.durationLabel ? (
-                <>
-                  <span
-                    className={`text-slate-400 shrink-0 ${fillHeight ? 'text-[9px]' : 'text-[10px]'}`}
-                  >
-                    ·
-                  </span>
-                  <span
-                    className={`font-semibold tabular-nums text-emerald-700/90 whitespace-nowrap ${
-                      fillHeight ? 'text-[9px]' : 'text-[10px]'
-                    }`}
-                    title="Generation length when this score was earned"
-                  >
-                    {goalBestEver.durationLabel}
-                  </span>
-                </>
-              ) : null}
-              <span
-                className={`text-slate-400 shrink-0 ${fillHeight ? 'text-[9px]' : 'text-[10px]'}`}
-              >
-                ·
-              </span>
-              <span
-                className={`font-semibold text-slate-700 truncate ${
-                  fillHeight ? 'text-[10px]' : 'text-xs'
-                }`}
-              >
-                {goalBestEver.modelName}
-              </span>
-            </>
-          ) : (
-            <span
-              className={`font-medium text-slate-400 whitespace-nowrap ${
-                fillHeight ? 'text-[10px]' : 'text-xs'
-              }`}
-            >
-              No record yet
-            </span>
-          )}
-        </div>
-        <div
           className={`flex items-center gap-4 text-xs font-medium text-slate-500 shrink-0 z-10 ${
             fillHeight ? 'hidden lg:flex gap-2.5' : ''
           }`}
@@ -1335,7 +1354,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
                 </span>
                 {!simOverlayOpen && (
                   <span className="ml-auto text-[10px] font-semibold text-white/70 tabular-nums">
-                    {isRunning ? 'Running' : 'Paused'} · {simulationSpeed}x
+                    {isRunning ? 'Running' : 'Paused'} · {effectiveSimulationSpeed.toFixed(2)}x
                   </span>
                 )}
               </button>
@@ -1384,7 +1403,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
                     </button>
                   </div>
                   <div className="flex items-center rounded-lg overflow-hidden border border-white/25 bg-black/25 w-fit">
-                    {([0.5, 1, 2, 4, 10, 25] as const).map(speed => (
+                    {([0.05, 0.5, 1, 2, 4, 10, 25] as const).map(speed => (
                       <button
                         key={speed}
                         type="button"
@@ -1398,6 +1417,14 @@ export const Visualizer: React.FC<VisualizerProps> = ({
                         {speed}x
                       </button>
                     ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold text-white/75 tabular-nums">
+                    <span>Requested {simulationSpeed}x</span>
+                    <span>Effective {effectiveSimulationSpeed.toFixed(2)}x</span>
+                    <span>{simStepsPerSecond.toFixed(0)} steps/s</span>
+                    <span className={autoThrottleActive ? 'text-amber-200' : 'text-emerald-200'}>
+                      Auto-throttle {autoThrottleActive ? 'on' : 'off'}
+                    </span>
                   </div>
                 </div>
               )}

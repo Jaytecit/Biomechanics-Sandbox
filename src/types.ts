@@ -565,6 +565,12 @@ export interface Creature {
   solidBodies?: RuntimeSolidBody[];
   startX: number;
   startY: number;
+  /**
+   * Settled spawn AABB (including node radii). Used to scale flight / jump
+   * reward gates to the creature actually competing.
+   */
+  restBodyHeight?: number;
+  restBodyWidth?: number;
   highestY: number;
   currentX: number;
   currentY: number;

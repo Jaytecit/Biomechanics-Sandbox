@@ -33,6 +33,11 @@ function rotateAround(
 /**
  * If angle A–H–B exceeds maxAngle, rotate A and B around H toward each other
  * by half the excess each. Length constraints re-settle bone lengths afterward.
+ *
+ * Velocity preservation mirrors the solid-body correction approach: capture
+ * the pre-projection rigid velocity field around hinge H and rewrite oldX/oldY
+ * from v = v_h + ω×r after projection. This avoids Verlet energy injection
+ * when multiple hinge-stop pair projections compose in one step.
  */
 export function enforcePairMaxAngle(
   hinge: PhysicsNode,
@@ -40,6 +45,13 @@ export function enforcePairMaxAngle(
   endB: PhysicsNode,
   maxAngle: number = HINGE_STOP_MAX_ANGLE
 ): boolean {
+  const vHx = hinge.x - hinge.oldX;
+  const vHy = hinge.y - hinge.oldY;
+  const vAx = endA.x - endA.oldX;
+  const vAy = endA.y - endA.oldY;
+  const vBx = endB.x - endB.oldX;
+  const vBy = endB.y - endB.oldY;
+
   const uax = endA.x - hinge.x;
   const uay = endA.y - hinge.y;
   const ubx = endB.x - hinge.x;
@@ -60,20 +72,39 @@ export function enforcePairMaxAngle(
   const nextA = rotateAround(endA.x, endA.y, hinge.x, hinge.y, sign * half);
   const nextB = rotateAround(endB.x, endB.y, hinge.x, hinge.y, -sign * half);
 
-  const dAx = nextA.x - endA.x;
-  const dAy = nextA.y - endA.y;
-  const dBx = nextB.x - endB.x;
-  const dBy = nextB.y - endB.y;
+  // Fit a rigid angular velocity around the hinge from pre-projection motion.
+  const mA = Math.max(1e-6, endA.mass);
+  const mB = Math.max(1e-6, endB.mass);
+  const relVAx = vAx - vHx;
+  const relVAy = vAy - vHy;
+  const relVBx = vBx - vHx;
+  const relVBy = vBy - vHy;
+  const angMom =
+    mA * (uax * relVAy - uay * relVAx) +
+    mB * (ubx * relVBy - uby * relVBx);
+  const inertia =
+    mA * (uax * uax + uay * uay) +
+    mB * (ubx * ubx + uby * uby);
+  const omega = inertia > 1e-8 ? angMom / inertia : 0;
 
   endA.x = nextA.x;
   endA.y = nextA.y;
   endB.x = nextB.x;
   endB.y = nextB.y;
-  // Always preserve Verlet velocity — never inject energy from the stop.
-  endA.oldX += dAx;
-  endA.oldY += dAy;
-  endB.oldX += dBx;
-  endB.oldY += dBy;
+
+  // Preserve rigid hinge-pair velocity field: v = v_h + ω × r.
+  const rA2x = endA.x - hinge.x;
+  const rA2y = endA.y - hinge.y;
+  const rB2x = endB.x - hinge.x;
+  const rB2y = endB.y - hinge.y;
+  const nextVAx = vHx - omega * rA2y;
+  const nextVAy = vHy + omega * rA2x;
+  const nextVBx = vHx - omega * rB2y;
+  const nextVBy = vHy + omega * rB2x;
+  endA.oldX = endA.x - nextVAx;
+  endA.oldY = endA.y - nextVAy;
+  endB.oldX = endB.x - nextVBx;
+  endB.oldY = endB.y - nextVBy;
   return true;
 }
 

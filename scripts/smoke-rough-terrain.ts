@@ -10,7 +10,6 @@ import {
   spawnCreature,
   updateCreaturePhysics,
 } from '../src/physics';
-import { CREATURE_TEMPLATES } from '../src/templates';
 import {
   CreatureBlueprint,
   DEFAULT_ARENA_MODIFIERS,
@@ -19,12 +18,6 @@ import {
   SimulationConfig,
   genomeIOForBlueprint,
 } from '../src/types';
-
-function template(name: string): CreatureBlueprint {
-  const blueprint = CREATURE_TEMPLATES.find(candidate => candidate.name === name);
-  if (!blueprint) throw new Error(`Missing template: ${name}`);
-  return blueprint;
-}
 
 function groundedSpawnY(blueprint: CreatureBlueprint): number {
   const lowestRelative = Math.max(
@@ -66,7 +59,47 @@ function config(
 }
 
 function spawn(id: string, difficulty = 1) {
-  const blueprint = template('Motor Cart');
+  // Dedicated motor-only probe body (shipped carts also carry aero surfaces).
+  const blueprint: CreatureBlueprint = {
+    name: 'Terrain Probe Cart',
+    nodes: [
+      { id: 0, mass: 2, radius: 11, friction: 0.2, color: '#64748b' },
+      { id: 1, mass: 2, radius: 11, friction: 0.2, color: '#475569' },
+      {
+        id: 2,
+        mass: 1.5,
+        radius: 12,
+        friction: 0.05,
+        color: '#f59e0b',
+        isWheel: true,
+        isMotorWheel: true,
+        motorPower: 0.55,
+      },
+      {
+        id: 3,
+        mass: 1.5,
+        radius: 12,
+        friction: 0.05,
+        color: '#d97706',
+        isWheel: true,
+        isMotorWheel: true,
+        motorPower: 0.55,
+      },
+    ],
+    muscles: [
+      { id: 0, nodeA: 0, nodeB: 1, originalLength: 70, minLength: 70, maxLength: 70, strength: 1, phaseOffset: 0 },
+      { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
+      { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
+      { id: 3, nodeA: 0, nodeB: 3, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
+      { id: 4, nodeA: 1, nodeB: 2, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
+    ],
+    relativePositions: [
+      { x: -28, y: -38 },
+      { x: 28, y: -38 },
+      { x: -32, y: -12 },
+      { x: 32, y: -12 },
+    ],
+  };
   const io = genomeIOForBlueprint(blueprint);
   return spawnCreature(
     {

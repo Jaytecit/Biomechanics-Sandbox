@@ -72,6 +72,10 @@ export const ModelsPanel: React.FC<ModelsPanelProps> = ({
     setSaveName(suggestedSaveName);
   }, [suggestedSaveName]);
 
+  const overwriteTarget = models.find(
+    m => m.name.trim().toLowerCase() === saveName.trim().toLowerCase()
+  );
+
   const startEdit = (model: FinishedModel) => {
     setEditingId(model.id);
     setEditName(model.name);
@@ -273,10 +277,20 @@ export const ModelsPanel: React.FC<ModelsPanelProps> = ({
               disabled={!canSaveLeader || !saveName.trim()}
               onClick={() => onSaveLeader(saveName.trim(), saveNotes.trim())}
               className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-bold cursor-pointer"
+              title={
+                overwriteTarget
+                  ? `Replaces existing shelf model “${overwriteTarget.name}”`
+                  : 'Save a new finished product'
+              }
             >
               <Save className="w-3.5 h-3.5" />
-              Freeze & Save
+              {overwriteTarget ? 'Overwrite & Save' : 'Freeze & Save'}
             </button>
+            {overwriteTarget ? (
+              <p className="text-[9px] leading-relaxed text-amber-800/90">
+                A shelf model named “{overwriteTarget.name}” already exists and will be updated.
+              </p>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2">

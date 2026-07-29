@@ -82,7 +82,7 @@ export interface CreaturePackage {
   controllers: ControllerSnapshot[];
   bodyFingerprint: string;
   physicsVersion: string;
-  source: ControllerSnapshot['source'] | 'legacy-migration';
+  source: ControllerSnapshot['source'] | 'legacy-migration' | 'builtin';
   notes?: string;
 }
 
@@ -90,6 +90,51 @@ export interface RepositoryResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+}
+
+export const BUILTIN_PACKAGE_ID_PREFIX = 'builtin_pkg_';
+
+export function builtinPackageIdForName(name: string): string {
+  return `${BUILTIN_PACKAGE_ID_PREFIX}${name.toLowerCase().replace(/\s+/g, '_')}`;
+}
+
+export function isBuiltinPackageId(id: string): boolean {
+  return id.startsWith(BUILTIN_PACKAGE_ID_PREFIX);
+}
+
+/** Body-only shipped packages (no controllers) — appear in the Untrained list. */
+export function buildBuiltinCreaturePackages(
+  templates: CreatureBlueprint[] = CREATURE_TEMPLATES
+): CreaturePackage[] {
+  const timestamp = '2026-07-29T00:00:00.000Z';
+  return templates.map(blueprint => ({
+    schemaVersion: CREATURE_PACKAGE_SCHEMA,
+    id: builtinPackageIdForName(blueprint.name),
+    revision: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    displayName: blueprint.name,
+    blueprint: structuredClone(blueprint),
+    controllers: [],
+    bodyFingerprint: bodyFingerprint(blueprint),
+    physicsVersion: SOFT_BODY_PHYSICS_VERSION,
+    source: 'builtin' as const,
+    notes: 'Shipped body template',
+  }));
+}
+
+/**
+ * Keep shipped body packages present and authoritative for their ids/names.
+ * User packages that collide on builtin ids are dropped; name collisions with
+ * templates are left for uniqueCreatureVersionName on save.
+ */
+export function ensureBuiltinCreaturePackages(
+  packages: CreaturePackage[]
+): CreaturePackage[] {
+  const builtins = buildBuiltinCreaturePackages();
+  const builtinIds = new Set(builtins.map(item => item.id));
+  const rest = packages.filter(item => !builtinIds.has(item.id));
+  return [...builtins, ...rest];
 }
 
 function storage(): Storage | null {
@@ -343,6 +388,17 @@ export function normalizeCreaturePackages(
   const occupied = new Set(CREATURE_TEMPLATES.map(template => template.name));
   const normalized: CreaturePackage[] = [];
   for (const item of byDuplicateKey.values()) {
+    if (isBuiltinPackageId(item.id)) {
+      // Builtin packages keep exact template names; refresh fingerprint only.
+      occupied.add(item.displayName);
+      normalized.push({
+        ...item,
+        displayName: item.displayName,
+        blueprint: { ...item.blueprint, name: item.displayName },
+        bodyFingerprint: bodyFingerprint(item.blueprint),
+      });
+      continue;
+    }
     const displayName = uniqueCreatureVersionName(item.displayName, occupied);
     occupied.add(displayName);
     normalized.push({
@@ -428,7 +484,7 @@ export function loadCreaturePackages(): CreaturePackage[] {
     // Storage failures must not prevent the in-memory repository from loading.
   }
 
-  const normalized = normalizeCreaturePackages(packages);
+  const normalized = ensureBuiltinCreaturePackages(normalizeCreaturePackages(packages));
   if (
     repositoryChanged ||
     JSON.stringify(normalized) !== JSON.stringify(packages)
@@ -461,6 +517,9 @@ export function savePackageRevision(
   id: string,
   update: Partial<Pick<CreaturePackage, 'displayName' | 'blueprint' | 'appearance' | 'controllers' | 'notes'>>
 ): RepositoryResult<CreaturePackage> {
+  if (isBuiltinPackageId(id) && (update.displayName || update.blueprint)) {
+    return { ok: false, error: 'Shipped body templates are read-only' };
+  }
   const all = loadCreaturePackages();
   const index = all.findIndex(item => item.id === id);
   if (index < 0) return { ok: false, error: 'Creature package not found' };
@@ -487,16 +546,22 @@ export function duplicatePackage(id: string, displayName?: string): RepositoryRe
     displayName: displayName ?? source.displayName,
     appearance: source.appearance,
     controllers: source.controllers,
-    source: source.source,
+    source: source.source === 'builtin' ? 'studio-draft' : source.source,
     notes: source.notes,
   });
 }
 
 export function renamePackage(id: string, displayName: string): RepositoryResult<CreaturePackage> {
+  if (isBuiltinPackageId(id)) {
+    return { ok: false, error: 'Shipped body templates cannot be renamed' };
+  }
   return savePackageRevision(id, { displayName: displayName.trim() || 'Untitled Creature' });
 }
 
 export function deletePackage(id: string): RepositoryResult<CreaturePackage[]> {
+  if (isBuiltinPackageId(id)) {
+    return { ok: false, error: 'Shipped body templates cannot be deleted' };
+  }
   const all = loadCreaturePackages();
   const doomed = all.find(item => item.id === id);
   const next = all.filter(item => item.id !== id);
@@ -564,8 +629,12 @@ export function loadStudioDraft(): { blueprint: CreatureBlueprint; appearance?: 
 }
 
 export function builtinAndSavedBlueprints(): CreatureBlueprint[] {
-  return [...CREATURE_TEMPLATES, ...loadCreaturePackages().map(item => ({
-    ...structuredClone(item.blueprint),
-    name: item.displayName,
-  }))];
+  const builtinNames = new Set(CREATURE_TEMPLATES.map(template => template.name));
+  const extras = loadCreaturePackages()
+    .filter(item => !isBuiltinPackageId(item.id) && !builtinNames.has(item.displayName))
+    .map(item => ({
+      ...structuredClone(item.blueprint),
+      name: item.displayName,
+    }));
+  return [...CREATURE_TEMPLATES, ...extras];
 }

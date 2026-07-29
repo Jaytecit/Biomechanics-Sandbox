@@ -86,6 +86,7 @@ import {
   sanitizeArenaForZone,
 } from './zones';
 import {
+  clearGoalBestEver,
   FinishedModel,
   exportProductPayload,
   findBestModelForGoal,
@@ -162,6 +163,9 @@ const DEFAULT_CONFIG: SimulationConfig = {
 // Physics stays tied to requestAnimationFrame, while React telemetry only needs
 // human-readable cadence. The canvas reads the live creature objects directly.
 const UI_SYNC_INTERVAL_MS = 1000 / 15;
+const AUTO_THROTTLE_BUDGET_HIGH_MS = 14;
+const AUTO_THROTTLE_BUDGET_LOW_MS = 8;
+const AUTO_THROTTLE_MIN_SCALE = 0.08;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'models' | 'simulation' | 'studio' | 'environment'>(
@@ -232,6 +236,10 @@ export default function App() {
   const [bestEverJumpHeight, setBestEverJumpHeight] = useState<number>(0);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [sessionModelBestByKey, setSessionModelBestByKey] = useState<Record<string, number>>({});
+  const [simStepsPerSecond, setSimStepsPerSecond] = useState<number>(0);
+  const [effectiveSimulationSpeed, setEffectiveSimulationSpeed] = useState<number>(1);
+  const [autoThrottleActive, setAutoThrottleActive] = useState<boolean>(false);
   const [challengeProgress, setChallengeProgress] = useState(loadChallengeProgress);
   const [activeChallengeId, setActiveChallengeId] = useState<string | null>(null);
   const [finishedModels, setFinishedModels] = useState<FinishedModel[]>(() => loadFinishedModels());
@@ -266,7 +274,12 @@ export default function App() {
   const obstaclesRef = useRef(obstacles);
   const configRef = useRef(config);
   const selectedCreatureIdRef = useRef<string | null>(selectedCreatureId);
+  const currentModelScoreKeyRef = useRef<string>('');
   const lastUiSyncMsRef = useRef<number>(0);
+  const simStepsWindowStartMsRef = useRef<number>(0);
+  const simStepsWindowCountRef = useRef<number>(0);
+  const speedThrottleScaleRef = useRef<number>(1);
+  const simStepsPerSecondRef = useRef<number>(0);
   const generationHistoryLengthRef = useRef(generationHistory.length);
   const bestEverFitnessRef = useRef(bestEverFitness);
   const bestEverGenerationDurationRef = useRef(bestEverGenerationDuration);
@@ -280,6 +293,7 @@ export default function App() {
   worldObjectsRef.current = worldObjects;
   obstaclesRef.current = obstacles;
   selectedCreatureIdRef.current = selectedCreatureId;
+  currentModelScoreKeyRef.current = `${config.goal}::${bodyFingerprint(selectedTemplate)}`;
   generationHistoryLengthRef.current = generationHistory.length;
   bestEverFitnessRef.current = bestEverFitness;
   bestEverGenerationDurationRef.current = bestEverGenerationDuration;
@@ -866,8 +880,14 @@ export default function App() {
     if (measureBreed) recordBreed(performance.now() - breedStartedAt);
   }, [currentGen, config, selectedTemplate, bestEverDistance, bestEverPeakSpeed, bestEverPeakLandSpeed, bestEverJumpHeight, resetWorld, raiseBestEverIfBeaten]);
 
-  // Fractional-speed accumulator so 0.5x can step every other frame
+  // Fractional-speed accumulator so sub-1x speeds (e.g. 0.05x) still advance.
   const speedAccumulatorRef = useRef<number>(0);
+
+  useEffect(() => {
+    speedThrottleScaleRef.current = 1;
+    setEffectiveSimulationSpeed(config.simulationSpeed);
+    setAutoThrottleActive(false);
+  }, [config.simulationSpeed]);
 
   // Main high-frequency physics tick loop
   useEffect(() => {
@@ -876,12 +896,21 @@ export default function App() {
     let animId: number;
     speedAccumulatorRef.current = 0;
     lastUiSyncMsRef.current = 0;
+    simStepsWindowStartMsRef.current = 0;
+    simStepsWindowCountRef.current = 0;
+    simStepsPerSecondRef.current = 0;
+    setSimStepsPerSecond(0);
 
     const tick = (frameTimeMs: number) => {
       const cfg = configRef.current;
       const measurePerformance = isPerformanceDiagnosticsActive();
-      const physicsStartedAt = measurePerformance ? performance.now() : 0;
-      speedAccumulatorRef.current += cfg.simulationSpeed;
+      const physicsStartedAt = performance.now();
+      const speedScale = Math.max(
+        AUTO_THROTTLE_MIN_SCALE,
+        Math.min(1, speedThrottleScaleRef.current)
+      );
+      const effectiveSpeed = cfg.simulationSpeed * speedScale;
+      speedAccumulatorRef.current += effectiveSpeed;
       const steps = Math.floor(speedAccumulatorRef.current);
       speedAccumulatorRef.current -= steps;
       const stepDuration = 1 / 60;
@@ -924,6 +953,32 @@ export default function App() {
         }
         elapsedSecondsRef.current += stepDuration;
       }
+      const physicsDurationMs = performance.now() - physicsStartedAt;
+
+      if (cfg.simulationSpeed > 1) {
+        if (physicsDurationMs > AUTO_THROTTLE_BUDGET_HIGH_MS && steps > 0) {
+          speedThrottleScaleRef.current = Math.max(
+            AUTO_THROTTLE_MIN_SCALE,
+            speedThrottleScaleRef.current * 0.88
+          );
+        } else if (physicsDurationMs < AUTO_THROTTLE_BUDGET_LOW_MS) {
+          speedThrottleScaleRef.current = Math.min(1, speedThrottleScaleRef.current * 1.04);
+        }
+      } else {
+        speedThrottleScaleRef.current = 1;
+      }
+
+      if (simStepsWindowStartMsRef.current <= 0) {
+        simStepsWindowStartMsRef.current = frameTimeMs;
+      }
+      simStepsWindowCountRef.current += steps;
+      const windowElapsedMs = frameTimeMs - simStepsWindowStartMsRef.current;
+      if (windowElapsedMs >= 1000) {
+        simStepsPerSecondRef.current =
+          (simStepsWindowCountRef.current * 1000) / Math.max(1, windowElapsedMs);
+        simStepsWindowStartMsRef.current = frameTimeMs;
+        simStepsWindowCountRef.current = 0;
+      }
 
       creaturesRef.current = currentPop;
       // Display the focused agent's private objects (never a shared contested ball/crate)
@@ -957,17 +1012,31 @@ export default function App() {
           }
           raiseBestEverIfBeaten(cfg.goal, liveBest, cfg.generationDuration, champName);
         }
+        setSessionModelBestByKey(prev => {
+          const modelKey = currentModelScoreKeyRef.current;
+          const prior = prev[modelKey] ?? 0;
+          if (liveBest <= prior) return prev;
+          return { ...prev, [modelKey]: liveBest };
+        });
         setCreatures([...currentPop]);
         setWorldObjects(displayObjs);
         setObstacles(obs.map(o => ({ ...o })));
         setElapsedSeconds(elapsedSecondsRef.current);
+        setSimStepsPerSecond(simStepsPerSecondRef.current);
+        const appliedScale = Math.max(
+          AUTO_THROTTLE_MIN_SCALE,
+          Math.min(1, speedThrottleScaleRef.current)
+        );
+        const nextEffectiveSpeed = cfg.simulationSpeed * appliedScale;
+        setEffectiveSimulationSpeed(nextEffectiveSpeed);
+        setAutoThrottleActive(cfg.simulationSpeed > 1 && appliedScale < 0.999);
         recordUiSync();
       }
 
       if (measurePerformance) {
         recordPhysicsFrame(
           performance.now(),
-          performance.now() - physicsStartedAt,
+          physicsDurationMs,
           steps,
           {
             generation: currentPop[0]?.generation ?? currentGen,
@@ -1149,6 +1218,12 @@ export default function App() {
   // Wipe statistics and start fresh
   const handleResetSimulation = () => {
     protectSeededPopulationRef.current = false;
+    setSessionModelBestByKey(prev => {
+      const modelKey = currentModelScoreKeyRef.current;
+      if (!(modelKey in prev)) return prev;
+      const { [modelKey]: _discarded, ...rest } = prev;
+      return rest;
+    });
     if (isParaRampGoal(config.goal)) {
       setConfig(prev => ({
         ...prev,
@@ -1506,6 +1581,10 @@ export default function App() {
 
   /** Permanent untrained delete: remove package + anatomy menu entry. */
   const handlePermanentlyDeleteUntrainedPackage = (id: string) => {
+    if (id.startsWith('builtin_pkg_')) {
+      alert('Shipped body templates cannot be deleted.');
+      return;
+    }
     const pkg = loadCreaturePackages().find(item => item.id === id);
     if (!pkg) {
       setPackagesRefreshToken(t => t + 1);
@@ -1523,7 +1602,9 @@ export default function App() {
     packageIds: string[];
   }) => {
     const shelfIdSet = new Set(payload.shelfIds);
-    const packageIdSet = new Set(payload.packageIds);
+    const packageIdSet = new Set(
+      payload.packageIds.filter(id => !id.startsWith('builtin_pkg_'))
+    );
     const namesToPurge: string[] = [];
 
     const shelfSnapshot = loadFinishedModels();
@@ -1805,6 +1886,10 @@ export default function App() {
 
   const bestEverDisplay = formatBestEver(config.goal, bestEverFitness);
   const liveLeaderDisplay = formatLiveLeader(config.goal, activeLeader);
+  const currentModelScoreKey = `${config.goal}::${bodyFingerprint(selectedTemplate)}`;
+  const currentModelBestFitness = sessionModelBestByKey[currentModelScoreKey] ?? 0;
+  const currentModelBestDisplay = formatBestEver(config.goal, currentModelBestFitness);
+  const displayedGenerationCount = generationHistory.length;
 
   const goalBestEver = useMemo(
     () =>
@@ -1822,6 +1907,15 @@ export default function App() {
   const suggestedSaveName = transferSourceName
     ? suggestTransferProductName(transferSourceName, config.goal)
     : `${selectedTemplate.name} Gen ${currentGen}`;
+
+  const handleResetGoalBestEver = useCallback(() => {
+    const nextModels = clearGoalBestEver(config.goal);
+    setFinishedModels(nextModels);
+    setBestEverFitness(0);
+    bestEverFitnessRef.current = 0;
+    setBestEverGenerationDuration(0);
+    bestEverGenerationDurationRef.current = 0;
+  }, [config.goal]);
 
   const MetricCard = ({
     icon,
@@ -1861,7 +1955,7 @@ export default function App() {
     onResetSimulation: handleResetSimulation,
     onExportBestModel: handleExportBestModel,
     onImportModel: handleImportModel,
-    generation: currentGen,
+    generation: displayedGenerationCount,
     templates: zoneTemplates,
     zoneId: activeZone,
   };
@@ -1873,7 +1967,7 @@ export default function App() {
         <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-800">
           <span>Run controls</span>
           <span className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-600">
-            Generation {currentGen}
+            Generation {displayedGenerationCount}
           </span>
         </div>
         <div className="grid grid-cols-3 gap-1.5">
@@ -1900,7 +1994,7 @@ export default function App() {
           </button>
         </div>
         <div className="mt-2 grid grid-cols-3 gap-1">
-          {[0.5, 1, 2, 4, 10, 25].map(speed => (
+          {[0.05, 0.5, 1, 2, 4, 10, 25].map(speed => (
             <button
               key={speed}
               type="button"
@@ -1956,7 +2050,7 @@ export default function App() {
           onUpdateConfig={handleUpdateConfig}
           creatures={creatures}
           selectedCreatureId={selectedCreatureId}
-          currentGen={currentGen}
+          currentGen={displayedGenerationCount}
           bestEverFitness={bestEverFitness}
           challengeProgress={challengeProgress}
           activeChallengeId={activeChallengeId}
@@ -2054,71 +2148,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Quick status counters */}
-          <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
-            <a
-              href={ARENA_CHAMPIONSHIP_HREF}
-              className="flex items-center gap-2 bg-slate-900 text-amber-300 border border-slate-700 px-3 py-1.5 rounded-lg shadow-sm hover:bg-slate-800 no-underline"
-              title="Open Arena Championship"
-            >
-              <Swords className="w-3.5 h-3.5" />
-              Arena Championship
-              <ExternalLink className="w-3 h-3 opacity-70" />
-            </a>
-            {/* Gen */}
-            <div className="flex items-center gap-2 bg-slate-100 border border-slate-200/60 px-3 py-1.5 rounded-lg shadow-sm">
-              <History className="w-3.5 h-3.5 text-slate-500" />
-              <span className="text-slate-500">Generation</span>
-              <span className="text-slate-800 font-bold">{currentGen}</span>
-            </div>
-
-            {/* Timer */}
-            <div className="flex items-center gap-2 bg-slate-100 border border-slate-200/60 px-3 py-1.5 rounded-lg shadow-sm">
-              <Timer className="w-3.5 h-3.5 text-slate-500" />
-              <span className="text-slate-500">Timer</span>
-              <span className="text-slate-800 font-bold">
-                {elapsedSeconds.toFixed(1)}s / {config.generationDuration}s
-              </span>
-            </div>
-
-            {config.goal === EvolutionGoal.PARA_RAMP_GLIDE && (
-              <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg shadow-sm">
-                <Brain className="w-3.5 h-3.5 text-indigo-600" />
-                <span className="text-indigo-800 font-bold">
-                  {paraStageLabel(config.paraPilotStage ?? 'runUp')}
-                </span>
-              </div>
-            )}
-
-            {/* Live leader — primary metric for the active goal */}
-            <div
-              className="flex items-center gap-2 bg-orange-50 border border-orange-200 px-3 py-1.5 rounded-lg shadow-sm"
-              title={`${liveLeaderDisplay.label} (live)`}
-            >
-              <Trophy className="w-3.5 h-3.5 text-orange-500" />
-              <span className="text-orange-700">{liveLeaderDisplay.label}</span>
-              <span className="text-orange-900 font-bold tabular-nums">{liveLeaderDisplay.value}</span>
-            </div>
-
-            {/* Top Score — label/units follow active goal */}
-            <div
-              className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 px-3 py-1.5 rounded-lg shadow-sm"
-              title={
-                goalBestEver?.durationLabel
-                  ? `All-time best for ${config.goal} (${goalBestEver.durationLabel})`
-                  : `All-time best for ${config.goal}`
-              }
-            >
-              <Award className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="text-emerald-700">{bestEverDisplay.label}</span>
-              <span className="text-emerald-800 font-bold tabular-nums">{bestEverDisplay.value}</span>
-              {goalBestEver?.durationLabel ? (
-                <span className="text-emerald-700/80 font-semibold tabular-nums text-[11px]">
-                  · {goalBestEver.durationLabel}
-                </span>
-              ) : null}
-            </div>
-          </div>
         </div>
       </header>
       )}
@@ -2218,6 +2247,74 @@ export default function App() {
           )}
         </div>
 
+        {/* Universal status bar — always visible on every tab */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0 text-xs font-semibold px-1" id="universal-status-bar">
+          <a
+            href={ARENA_CHAMPIONSHIP_HREF}
+            className="flex items-center gap-1.5 bg-slate-900 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-lg shadow-sm hover:bg-slate-800 no-underline"
+            title="Open Arena Championship"
+          >
+            <Swords className="w-3.5 h-3.5" />
+            Arena Championship
+            <ExternalLink className="w-3 h-3 opacity-70" />
+          </a>
+          <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200/60 px-2.5 py-1 rounded-lg shadow-sm">
+            <History className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-slate-500">Generation</span>
+            <span className="text-slate-800 font-bold">{displayedGenerationCount}</span>
+          </div>
+          <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200/60 px-2.5 py-1 rounded-lg shadow-sm">
+            <Timer className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-slate-500">Timer</span>
+            <span className="text-slate-800 font-bold">
+              {elapsedSeconds.toFixed(1)}s / {config.generationDuration}s
+            </span>
+          </div>
+          {config.goal === EvolutionGoal.PARA_RAMP_GLIDE && (
+            <div className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg shadow-sm">
+              <Brain className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="text-indigo-800 font-bold">
+                {paraStageLabel(config.paraPilotStage ?? 'runUp')}
+              </span>
+            </div>
+          )}
+          <div
+            className="flex items-center gap-1.5 bg-orange-50 border border-orange-200 px-2.5 py-1 rounded-lg shadow-sm"
+            title={`${currentModelBestDisplay.label} — best for this model in current session`}
+          >
+            <Trophy className="w-3.5 h-3.5 text-orange-500" />
+            <span className="text-orange-700">Current</span>
+            <span className="text-orange-900 font-bold tabular-nums">{currentModelBestDisplay.value}</span>
+          </div>
+          <div
+            className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-lg shadow-sm"
+            title={
+              goalBestEver?.durationLabel
+                ? `All-time best for ${config.goal} (${goalBestEver.durationLabel})`
+                : `All-time best for ${config.goal}`
+            }
+          >
+            <Award className="w-3.5 h-3.5 text-emerald-600" />
+            <span className="text-emerald-700">{bestEverDisplay.label}</span>
+            <span className="text-emerald-800 font-bold tabular-nums">{bestEverDisplay.value}</span>
+            {goalBestEver?.durationLabel ? (
+              <span className="text-emerald-700/80 font-semibold tabular-nums text-[11px]">
+                · {goalBestEver.durationLabel}
+              </span>
+            ) : null}
+            {bestEverFitness > 0 && (
+              <button
+                type="button"
+                onClick={handleResetGoalBestEver}
+                className="ml-0.5 text-emerald-500 hover:text-red-500 text-[10px] font-bold leading-none cursor-pointer"
+                title="Clear best ever score for this goal"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
         {activeTab !== 'models' && (
         <div className="flex items-center gap-2 shrink-0">
           <div className="flex-1 min-w-0">
@@ -2227,28 +2324,6 @@ export default function App() {
               compact={isFullscreen}
             />
           </div>
-          {isFullscreen && (
-            <div className="hidden sm:flex items-center gap-2 text-[10px] font-semibold text-slate-600 shrink-0">
-              <span className="bg-slate-100 border border-slate-200 px-2 py-1 rounded-md">
-                Gen {currentGen}
-              </span>
-              <span className="bg-slate-100 border border-slate-200 px-2 py-1 rounded-md tabular-nums">
-                {elapsedSeconds.toFixed(1)}s
-              </span>
-              <span
-                className="bg-orange-50 border border-orange-200 text-orange-900 px-2 py-1 rounded-md tabular-nums"
-                title={`${liveLeaderDisplay.label} (live)`}
-              >
-                {liveLeaderDisplay.value}
-              </span>
-              <span
-                className="bg-emerald-50 border border-emerald-100 text-emerald-800 px-2 py-1 rounded-md tabular-nums"
-                title={bestEverDisplay.label}
-              >
-                {bestEverDisplay.value}
-              </span>
-            </div>
-          )}
         </div>
         )}
 
@@ -2298,6 +2373,14 @@ export default function App() {
                 fillHeight={isFullscreen}
                 className={isFullscreen ? 'min-h-0 flex-1' : ''}
                 simulationSpeed={config.simulationSpeed}
+                effectiveSimulationSpeed={effectiveSimulationSpeed}
+                simStepsPerSecond={simStepsPerSecond}
+                autoThrottleActive={autoThrottleActive}
+                currentGen={displayedGenerationCount}
+                elapsedSeconds={elapsedSeconds}
+                generationDuration={config.generationDuration}
+                currentModelBestLabel={currentModelBestDisplay.value}
+                onResetGoalBestEver={handleResetGoalBestEver}
                 onToggleRun={() => setIsRunning(!isRunning)}
                 onManualBreed={handleManualBreed}
                 onResetSimulation={handleResetSimulation}

@@ -14,6 +14,10 @@ import {
 } from './types';
 import { getGoalInfo } from './goalCatalog';
 import { formatBestEver } from './formatGoal';
+import {
+  DEFAULT_FINISHED_MODEL_IDS,
+  DEFAULT_MODEL_SEEDS,
+} from './defaultModels';
 
 const STORAGE_KEY = 'biomech_finished_models_v1';
 /** Permanent all-time Best Ever per goal — survives resets, goal switches, and shelf deletes. */
@@ -168,26 +172,69 @@ function writeAll(models: FinishedModel[]) {
   }
 }
 
+const SHIPPED_DEFAULTS_KEY = 'biomech_shipped_defaults_v4';
+
+/** @deprecated Trained elites are no longer auto-seeded onto the shelf. */
+export function buildDefaultFinishedModels(now = new Date().toISOString()): FinishedModel[] {
+  return DEFAULT_MODEL_SEEDS.map(seed => ({
+    id: seed.id,
+    name: seed.name,
+    notes: '',
+    createdAt: seed.createdAt,
+    updatedAt: now,
+    generation: seed.generation,
+    fitness: seed.fitness,
+    trainedGoal: seed.trainedGoal,
+    blueprint: structuredClone(seed.blueprint),
+    genome: structuredClone(seed.genome),
+    traits: deriveModelTraits(seed.blueprint, seed.genome, seed.trainedGoal),
+  }));
+}
+
+function normalizeLoadedModels(parsed: unknown[]): FinishedModel[] {
+  return parsed.filter(isValidFinishedModel).map(m => ({
+    ...m,
+    notes: typeof m.notes === 'string' ? m.notes : '',
+    generationDurationSec:
+      typeof m.generationDurationSec === 'number' &&
+      Number.isFinite(m.generationDurationSec) &&
+      m.generationDurationSec > 0
+        ? m.generationDurationSec
+        : undefined,
+    traits: {
+      ...m.traits,
+      bodyTraits: Array.isArray(m.traits.bodyTraits) ? m.traits.bodyTraits : [],
+    },
+  }));
+}
+
+/**
+ * One-time: strip previously auto-seeded trained shelf products. Body-only
+ * defaults live in the Untrained package list (see creaturePackages).
+ * User-created / overwritten shelf products are kept.
+ */
+function ensureShippedDefaults() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (localStorage.getItem(SHIPPED_DEFAULTS_KEY) === 'done') return;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const existing = Array.isArray(parsed) ? normalizeLoadedModels(parsed) : [];
+    writeAll(existing.filter(m => !DEFAULT_FINISHED_MODEL_IDS.has(m.id)));
+    localStorage.setItem(SHIPPED_DEFAULTS_KEY, 'done');
+  } catch {
+    /* ignore */
+  }
+}
+
 export function loadFinishedModels(): FinishedModel[] {
   try {
+    ensureShippedDefaults();
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidFinishedModel).map(m => ({
-      ...m,
-      notes: typeof m.notes === 'string' ? m.notes : '',
-      generationDurationSec:
-        typeof m.generationDurationSec === 'number' &&
-        Number.isFinite(m.generationDurationSec) &&
-        m.generationDurationSec > 0
-          ? m.generationDurationSec
-          : undefined,
-      traits: {
-        ...m.traits,
-        bodyTraits: Array.isArray(m.traits.bodyTraits) ? m.traits.bodyTraits : [],
-      },
-    }));
+    return normalizeLoadedModels(parsed);
   } catch {
     return [];
   }
@@ -357,6 +404,35 @@ export function promoteGoalBestEver(
     return refined;
   }
   return existing;
+}
+
+/**
+ * Clear all Best Ever traces for one goal.
+ * - Removes the persisted ledger entry for that goal.
+ * - Zeroes shelf model fitness trained under that goal so the score cannot
+ *   immediately reappear from finished models.
+ * Returns the updated finished-model list.
+ */
+export function clearGoalBestEver(goal: EvolutionGoal): FinishedModel[] {
+  const map = loadGoalBestEverMap();
+  delete map[goal];
+  writeGoalBestEverMap(map);
+
+  const models = loadFinishedModels();
+  let changed = false;
+  const next = models.map(model => {
+    if (model.trainedGoal !== goal || !Number.isFinite(model.fitness) || model.fitness <= 0) {
+      return model;
+    }
+    changed = true;
+    return {
+      ...model,
+      fitness: 0,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  if (changed) writeAll(next);
+  return changed ? next : models;
 }
 
 /**
@@ -636,14 +712,17 @@ export interface SaveProductInput {
   replaceId?: string;
 }
 
-/** Freeze the current creature as a named finished product. */
+/** Freeze the current creature as a named finished product.
+ * Same display name replaces the existing shelf entry (update in place).
+ */
 export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
   const { creature, trainedGoal, generation } = input;
   const name = input.name.trim() || `${creature.blueprint.name} Elite`;
   const now = new Date().toISOString();
+  const shelf = loadFinishedModels();
   const existing = input.replaceId
-    ? loadFinishedModels().find(m => m.id === input.replaceId)
-    : undefined;
+    ? shelf.find(m => m.id === input.replaceId)
+    : shelf.find(m => m.name.trim().toLowerCase() === name.toLowerCase());
   const duration =
     typeof input.generationDurationSec === 'number' &&
     Number.isFinite(input.generationDurationSec) &&
@@ -681,7 +760,9 @@ export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
   return product;
 }
 
-/** Import a downloaded elite JSON (or gallery export) into the finished-product shelf. */
+/** Import a downloaded elite JSON (or gallery export) into the finished-product shelf.
+ * Same display name replaces the existing shelf entry.
+ */
 export function importElitePayloadAsProduct(
   data: Record<string, unknown>,
   fallbackName?: string
@@ -701,16 +782,18 @@ export function importElitePayloadAsProduct(
     typeof genDurationRaw === 'number' && Number.isFinite(genDurationRaw) && genDurationRaw > 0
       ? genDurationRaw
       : undefined;
+  const shelf = loadFinishedModels();
+  const existing = shelf.find(m => m.name.trim().toLowerCase() === name.trim().toLowerCase());
   const product: FinishedModel = {
-    id: newId(),
+    id: existing?.id ?? newId(),
     name,
-    notes: typeof data.notes === 'string' ? data.notes : '',
-    createdAt: typeof data.timestamp === 'string' ? data.timestamp : now,
+    notes: typeof data.notes === 'string' ? data.notes : existing?.notes ?? '',
+    createdAt: existing?.createdAt ?? (typeof data.timestamp === 'string' ? data.timestamp : now),
     updatedAt: now,
     generation: typeof data.generation === 'number' ? data.generation : 0,
     fitness: typeof data.fitness === 'number' ? data.fitness : 0,
     trainedGoal: goal,
-    generationDurationSec,
+    generationDurationSec: generationDurationSec ?? existing?.generationDurationSec,
     blueprint: structuredClone(data.blueprint),
     genome: structuredClone(data.genome),
     paraPilot: paraPilot ? structuredClone(paraPilot) : undefined,

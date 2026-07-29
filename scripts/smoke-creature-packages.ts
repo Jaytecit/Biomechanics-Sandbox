@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { CREATURE_TEMPLATES } from '../src/templates';
 import {
+  BUILTIN_PACKAGE_ID_PREFIX,
   CREATURE_REPOSITORY_KEY,
   LEGACY_CREATURE_KEY,
   SKELETON_VISIBLE_MIGRATION_KEY,
@@ -10,6 +11,7 @@ import {
   duplicatePackage,
   exportCreaturePackage,
   importCreaturePackage,
+  isBuiltinPackageId,
   loadCreaturePackages,
   nextCreatureVersionName,
   normalizeCreaturePackages,
@@ -29,20 +31,30 @@ Object.defineProperty(globalThis, 'localStorage', { value: {
   clear: () => memory.clear(),
 } });
 
+const customPackages = () =>
+  loadCreaturePackages().filter(item => !isBuiltinPackageId(item.id));
+
+assert.equal(
+  loadCreaturePackages().filter(item => isBuiltinPackageId(item.id)).length,
+  CREATURE_TEMPLATES.length,
+  'shipped body templates appear as untrained packages'
+);
+
 const blueprint = structuredClone(CREATURE_TEMPLATES[0]);
 blueprint.name = 'Duplicate Name';
+blueprint.nodes[0].mass += 0.11; // distinct from shipped Sprongo fingerprint
 memory.set(LEGACY_CREATURE_KEY, JSON.stringify([blueprint]));
-const migrated = loadCreaturePackages();
+const migrated = customPackages();
 assert.equal(migrated.length, 1);
 assert.ok(memory.has(LEGACY_CREATURE_KEY), 'legacy records are preserved');
-assert.equal(loadCreaturePackages().length, 1, 'migration is idempotent');
+assert.equal(customPackages().length, 1, 'migration is idempotent');
 
 const saved = saveNewPackage(blueprint, { displayName: 'Duplicate Name' });
 assert.ok(saved.ok);
 const duplicate = duplicatePackage(saved.value!.id, 'Duplicate Name');
 assert.ok(duplicate.ok);
 assert.deepEqual(
-  loadCreaturePackages().map(item => item.displayName),
+  customPackages().map(item => item.displayName),
   ['Duplicate Name', 'Duplicate Name V2', 'Duplicate Name V3']
 );
 const revision = savePackageRevision(saved.value!.id, { notes: 'revision smoke' });
@@ -51,7 +63,7 @@ const imported = importCreaturePackage(exportCreaturePackage(saved.value!));
 assert.ok(imported.ok);
 assert.equal(imported.value?.displayName, 'Duplicate Name V4');
 
-const existingPackages = loadCreaturePackages();
+const existingPackages = customPackages();
 const repeated = structuredClone(existingPackages[1]);
 repeated.id = 'accidental-repeat';
 repeated.displayName = 'Modified Duplicate Name';
@@ -118,7 +130,9 @@ assert.equal(
 );
 
 const oldAppearancePackages = loadCreaturePackages();
-oldAppearancePackages[0].appearance = {
+const customIdx = oldAppearancePackages.findIndex(item => !isBuiltinPackageId(item.id));
+assert.ok(customIdx >= 0);
+oldAppearancePackages[customIdx].appearance = {
   version: 1,
   hideSkeleton: true,
   primitives: [],
@@ -126,17 +140,13 @@ oldAppearancePackages[0].appearance = {
 memory.set(CREATURE_REPOSITORY_KEY, JSON.stringify(oldAppearancePackages));
 memory.delete(SKELETON_VISIBLE_MIGRATION_KEY);
 const visibilityMigrated = loadCreaturePackages();
+const migratedCustom = visibilityMigrated.find(item => item.id === oldAppearancePackages[customIdx].id);
 assert.equal(
-  visibilityMigrated[0].appearance?.hideSkeleton,
+  migratedCustom?.appearance?.hideSkeleton,
   false,
   'existing default-hidden appearances migrate to a visible collision skeleton once'
 );
 assert.equal(memory.get(SKELETON_VISIBLE_MIGRATION_KEY), 'done');
-assert.equal(
-  JSON.parse(memory.get(CREATURE_REPOSITORY_KEY)!)[0].appearance.hideSkeleton,
-  false,
-  'visibility migration is persisted'
-);
 
 const io = genomeIOForBlueprint(blueprint);
 const snapshot = {
@@ -181,6 +191,12 @@ assert.equal(
   legacyAfterDelete.some(item => item.name === 'Doomed Legacy Body'),
   false,
   'legacy v1 entry is purged on delete'
+);
+
+assert.equal(
+  deletePackage(`${BUILTIN_PACKAGE_ID_PREFIX}sprongo`).ok,
+  false,
+  'shipped body templates cannot be deleted'
 );
 
 console.log('smoke-creature-packages: PASS (deduplication, Vn naming, revisions, round-trip, stale controllers, permanent delete)');

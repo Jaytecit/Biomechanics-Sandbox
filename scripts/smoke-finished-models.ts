@@ -44,7 +44,8 @@ assert.equal(MAX_COMPETITORS, 8);
 assert.equal(formatGenLengthLabel(48), '48s gen');
 assert.equal(formatGenLengthLabel(undefined), null);
 
-const cart = CREATURE_TEMPLATES.find(t => t.name === 'Jump Cart') ?? CREATURE_TEMPLATES[0];
+const cart =
+  CREATURE_TEMPLATES.find(t => t.name === 'Glide Cart') ?? CREATURE_TEMPLATES[0];
 const io = genomeIOForBlueprint(cart);
 const genome = createBaseGenome(io.inputs, io.outputs);
 const traits = deriveModelTraits(cart, genome, EvolutionGoal.PARA_RAMP_GLIDE);
@@ -90,15 +91,17 @@ assert.equal(sessionOnly!.modelName, 'This run');
 assert.match(sessionOnly!.scoreLabel, /120\.5/);
 assert.equal(sessionOnly!.durationLabel, '48s gen');
 
+// Fitness must beat shipped Tool Eggs (~1175) on LOCOMOTION_RIGHT.
 upsertFinishedModel({
   ...product!,
   id: 'shelf-1',
   name: 'Shelf Champ',
   trainedGoal: EvolutionGoal.LOCOMOTION_RIGHT,
-  fitness: 200,
+  fitness: 2000,
   generationDurationSec: 28,
 });
 const models = loadFinishedModels();
+assert.ok(models.some(m => m.id === 'shelf-1'));
 const shelfWins = resolveGoalBestEver(
   EvolutionGoal.LOCOMOTION_RIGHT,
   { fitness: 150, generationDurationSec: 48 },
@@ -106,17 +109,17 @@ const shelfWins = resolveGoalBestEver(
 );
 assert.ok(shelfWins);
 assert.equal(shelfWins!.modelName, 'Shelf Champ');
-assert.match(shelfWins!.scoreLabel, /200\.0/);
+assert.match(shelfWins!.scoreLabel, /2000\.0/);
 assert.equal(shelfWins!.durationLabel, '28s gen');
 
 const runWins = resolveGoalBestEver(
   EvolutionGoal.LOCOMOTION_RIGHT,
-  { fitness: 250, generationDurationSec: 60 },
+  { fitness: 2500, generationDurationSec: 60 },
   models
 );
 assert.ok(runWins);
 assert.equal(runWins!.modelName, 'This run');
-assert.match(runWins!.scoreLabel, /250\.0/);
+assert.match(runWins!.scoreLabel, /2500\.0/);
 assert.equal(runWins!.durationLabel, '60s gen');
 
 assert.equal(findBestModelForGoal(EvolutionGoal.FLIGHT_TIME, models), null);
@@ -137,6 +140,10 @@ upsertFinishedModel({
   generationDurationSec: 48,
 });
 removeFinishedModel('flight-shelf');
+assert.equal(
+  loadFinishedModels().some(m => m.id === 'flight-shelf'),
+  false
+);
 assert.equal(loadFinishedModels().length, 0);
 const afterDelete = resolveGoalBestEver(
   EvolutionGoal.FLIGHT_TIME,
@@ -174,17 +181,41 @@ upsertFinishedModel({
   ...product!,
   id: 'seed-1',
   name: 'Legacy Champ',
-  trainedGoal: EvolutionGoal.LOCOMOTION_RIGHT,
+  trainedGoal: EvolutionGoal.JUMP_SPEED,
   fitness: 333,
   generationDurationSec: 28,
 });
 seedGoalBestEverFromShelf();
-assert.equal(getPersistedGoalBestEver(EvolutionGoal.LOCOMOTION_RIGHT)?.fitness, 333);
-assert.equal(getPersistedGoalBestEver(EvolutionGoal.LOCOMOTION_RIGHT)?.modelName, 'Legacy Champ');
+assert.equal(getPersistedGoalBestEver(EvolutionGoal.JUMP_SPEED)?.fitness, 333);
+assert.equal(getPersistedGoalBestEver(EvolutionGoal.JUMP_SPEED)?.modelName, 'Legacy Champ');
 
 assert.equal(
   suggestTransferProductName('Bird Aloft', EvolutionGoal.FLIGHT_HEIGHT),
   'Bird Aloft → Flight Height'
 );
+
+// Same-name Freeze replaces the existing shelf entry.
+store.clear();
+const firstSave = importElitePayloadAsProduct({
+  modelName: 'Sprongo',
+  fitness: 10,
+  generation: 1,
+  goal: EvolutionGoal.LOCOMOTION_RIGHT,
+  blueprint: cart,
+  genome,
+});
+assert.ok(firstSave);
+const secondSave = importElitePayloadAsProduct({
+  modelName: 'Sprongo',
+  fitness: 99,
+  generation: 8,
+  goal: EvolutionGoal.LOCOMOTION_RIGHT,
+  blueprint: cart,
+  genome,
+});
+assert.ok(secondSave);
+assert.equal(secondSave!.id, firstSave!.id);
+assert.equal(loadFinishedModels().filter(m => m.name === 'Sprongo').length, 1);
+assert.equal(loadFinishedModels().find(m => m.name === 'Sprongo')?.fitness, 99);
 
 console.log('smoke-finished-models: PASS');
