@@ -66,7 +66,8 @@ assert.equal(
   calculateFitness(soccer, EvolutionGoal.KICK_GOAL, soccer.privateWorld),
   0
 );
-soccer.ballCreatureContacted = true;
+soccer.ballContactFrame = 0;
+soccer.episodeFrames = 10;
 assert.equal(
   calculateFitness(soccer, EvolutionGoal.KICK_GOAL, soccer.privateWorld),
   100
@@ -85,7 +86,8 @@ assert.equal(
   0
 );
 Object.assign(targets, {
-  ballCreatureContacted: true,
+  ballContactFrame: 0,
+  episodeFrames: 10,
   targetHits: 1,
 });
 assert.equal(

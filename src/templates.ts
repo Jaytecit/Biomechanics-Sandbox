@@ -4,9 +4,10 @@
  */
 
 import { CreatureBlueprint } from './types';
+import { CREATURE_WORLD_SCALE, scaleCreatureBlueprint } from './creatureScale';
 
-/** Built-in anatomy templates permanently shipped with the app. */
-export const CREATURE_TEMPLATES: CreatureBlueprint[] = [
+/** Legacy built-in templates in pre-scale studio units. */
+const LEGACY_CREATURE_TEMPLATES: CreatureBlueprint[] = [
   {
     "name": "Sprongo",
     "nodes": [
@@ -42,28 +43,39 @@ export const CREATURE_TEMPLATES: CreatureBlueprint[] = [
         "isMotorWheel": false,
         "isFoot": true,
         "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 1.4999999999999998,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#f59e0b",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
       }
     ],
     "muscles": [
       {
         "id": 0,
-        "nodeA": 2,
-        "nodeB": 0,
-        "originalLength": 95,
-        "minLength": 95,
-        "maxLength": 95,
-        "strength": 1,
+        "nodeA": 0,
+        "nodeB": 2,
+        "originalLength": 90,
+        "minLength": 80,
+        "maxLength": 180,
+        "strength": 0.9,
         "phaseOffset": 0,
         "thickness": 1,
-        "linkKind": "bone"
+        "linkKind": "muscle"
       },
       {
         "id": 1,
-        "nodeA": 0,
-        "nodeB": 1,
-        "originalLength": 95,
-        "minLength": 95,
-        "maxLength": 95,
+        "nodeA": 1,
+        "nodeB": 2,
+        "originalLength": 70,
+        "minLength": 70,
+        "maxLength": 70,
         "strength": 1,
         "phaseOffset": 0,
         "thickness": 1,
@@ -71,29 +83,57 @@ export const CREATURE_TEMPLATES: CreatureBlueprint[] = [
       },
       {
         "id": 2,
-        "nodeA": 2,
-        "nodeB": 1,
-        "originalLength": 89,
-        "minLength": 10,
-        "maxLength": 178,
+        "nodeA": 3,
+        "nodeB": 0,
+        "originalLength": 90,
+        "minLength": 80,
+        "maxLength": 180,
         "strength": 0.6,
         "phaseOffset": 0,
         "thickness": 1,
         "linkKind": "muscle"
+      },
+      {
+        "id": 3,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 50,
+        "minLength": 40,
+        "maxLength": 100,
+        "strength": 0.6,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "muscle"
+      },
+      {
+        "id": 4,
+        "nodeA": 0,
+        "nodeB": 1,
+        "originalLength": 150,
+        "minLength": 150,
+        "maxLength": 150,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
       }
     ],
     "relativePositions": [
       {
-        "x": 180,
-        "y": -90
+        "x": -120,
+        "y": -150
       },
       {
-        "x": 150,
+        "x": -120,
         "y": 0
       },
       {
-        "x": 210,
-        "y": 0
+        "x": -60,
+        "y": -30
+      },
+      {
+        "x": -180,
+        "y": -30
       }
     ]
   },
@@ -1289,5 +1329,185 @@ export const CREATURE_TEMPLATES: CreatureBlueprint[] = [
         ]
       }
     ]
+  },
+  {
+    "name": "Piston Jump Cart",
+    "nodes": [
+      {
+        "id": 0,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#3b82f6",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 1,
+        "mass": 1.5,
+        "radius": 20,
+        "friction": 0.05,
+        "color": "#10b981",
+        "isWheel": true,
+        "isMotorWheel": true,
+        "motorPower": 7.9,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 2,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#6366f1",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 3,
+        "mass": 1.5,
+        "radius": 10,
+        "friction": 0.5,
+        "color": "#6366f1",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 4,
+        "mass": 1.2,
+        "radius": 8,
+        "friction": 0.5,
+        "color": "#8b5cf6",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": false,
+        "isHingeStop": false
+      },
+      {
+        "id": 5,
+        "mass": 0.7,
+        "radius": 12,
+        "friction": 1,
+        "color": "#ec4899",
+        "isWheel": false,
+        "isMotorWheel": false,
+        "isFoot": true,
+        "isHingeStop": false
+      }
+    ],
+    "muscles": [
+      {
+        "id": 0,
+        "nodeA": 2,
+        "nodeB": 3,
+        "originalLength": 210,
+        "minLength": 210,
+        "maxLength": 210,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 1,
+        "nodeA": 3,
+        "nodeB": 1,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 2,
+        "nodeA": 1,
+        "nodeB": 0,
+        "originalLength": 330,
+        "minLength": 330,
+        "maxLength": 330,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 3,
+        "nodeA": 0,
+        "nodeB": 2,
+        "originalLength": 85,
+        "minLength": 85,
+        "maxLength": 85,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 4,
+        "nodeA": 2,
+        "nodeB": 4,
+        "originalLength": 106,
+        "minLength": 106,
+        "maxLength": 106,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 5,
+        "nodeA": 3,
+        "nodeB": 4,
+        "originalLength": 106,
+        "minLength": 106,
+        "maxLength": 106,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "bone"
+      },
+      {
+        "id": 6,
+        "nodeA": 4,
+        "nodeB": 5,
+        "originalLength": 50,
+        "minLength": 50,
+        "maxLength": 150,
+        "strength": 1,
+        "phaseOffset": 0,
+        "thickness": 1,
+        "linkKind": "piston",
+        "extendRate": 80,
+        "retractRate": 10
+      }
+    ],
+    "relativePositions": [
+      { "x": -150, "y": -30 },
+      { "x": 180, "y": -30 },
+      { "x": -90, "y": -90 },
+      { "x": 120, "y": -90 },
+      { "x": 15, "y": -100 },
+      { "x": 15, "y": -50 }
+    ],
+    "solidSegments": [
+      {
+        "id": "solid-1",
+        "nodeIds": [0, 1, 2, 3, 4]
+      }
+    ]
   }
 ];
+
+/** Built-in anatomy templates permanently shipped with the app. */
+export const CREATURE_TEMPLATES: CreatureBlueprint[] = LEGACY_CREATURE_TEMPLATES.map(
+  template => scaleCreatureBlueprint(template, CREATURE_WORLD_SCALE)
+);

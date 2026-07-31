@@ -27,8 +27,10 @@ import { ARENA_CHAMPIONSHIP_HREF } from './ModelsPanel';
 import {
   FinishedModel,
   formatGenLengthLabel,
+  modelRewardFingerprint,
   traitLabel,
 } from '../savedModels';
+import { DEFAULT_REWARD_RECIPE_FINGERPRINT } from '../builtInRewardCoeffs';
 import {
   AppearanceRig,
   CreaturePackage,
@@ -174,9 +176,12 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
       : selection.pkg.blueprint
     : null;
 
-  const appearance = useMemo(() => {
-    if (!blueprint) return undefined;
-    if (selection?.kind === 'untrained' && selection.pkg.appearance) {
+  const studioAppearance = useMemo(() => {
+    if (!blueprint || !selection) return undefined;
+    if (selection.kind === 'shelf' && selection.model.appearance) {
+      return selection.model.appearance;
+    }
+    if (selection.kind === 'untrained' && selection.pkg.appearance) {
       return selection.pkg.appearance;
     }
     return resolveAppearance(blueprint, packages);
@@ -417,6 +422,12 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
                           {selection.model.fitness.toFixed(1)}
                         </strong>
                       </span>
+                      {modelRewardFingerprint(selection.model) !==
+                        DEFAULT_REWARD_RECIPE_FINGERPRINT && (
+                        <span className="text-amber-700 font-semibold">
+                          Custom rewards
+                        </span>
+                      )}
                       <span>
                         Gen{' '}
                         <strong className="tabular-nums text-slate-800">
@@ -584,7 +595,6 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(220px,0.85fr)_minmax(260px,1fr)]">
         <RangePreviewVisualizer
           blueprint={blueprint}
-          appearance={appearance}
           className="min-h-[280px] lg:min-h-0 h-full"
         />
 
@@ -809,7 +819,7 @@ export const ModelPickerPanel: React.FC<ModelPickerPanelProps> = ({
 
               <button
                 type="button"
-                onClick={() => onOpenInStudio(blueprint, appearance)}
+                onClick={() => onOpenInStudio(blueprint, studioAppearance)}
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-[11px] font-bold text-indigo-900 hover:bg-indigo-100 cursor-pointer"
               >
                 <Wrench className="h-3.5 w-3.5" />

@@ -139,7 +139,7 @@ function maxNodeSpeed(creature: Creature): number {
 }
 
 console.log(`physics ${SOFT_BODY_PHYSICS_VERSION}`);
-assert(SOFT_BODY_PHYSICS_VERSION === '4.21.0', 'expected physics 4.21.0');
+assert(SOFT_BODY_PHYSICS_VERSION === '4.26.0', 'expected physics 4.26.0');
 
 // --- Validation: soft chord inside solid is rejected ---
 {

@@ -12,6 +12,18 @@ import { inspectBlueprint } from './zones';
 import { normalizeSeed, seededRandom } from './determinism';
 
 export type CapabilityStatus = 'equipped' | 'plausible but unproven' | 'missing prerequisite' | 'not applicable';
+
+export type FlightHint = 'up' | 'down' | 'ok';
+
+export interface FlightFeasibility {
+  verdict: 'likely' | 'marginal' | 'unlikely' | 'no aero';
+  summary: string;
+  mass: { value: number; hint: FlightHint; note: string };
+  aeroArea: { value: number; hint: FlightHint; note: string };
+  wingLoading: { value: number | null; hint: FlightHint; note: string };
+  glideRatio: { value: number; hint: FlightHint; note: string };
+}
+
 export interface CapabilityReport {
   seed: number;
   label: 'Untrained potential probe';
@@ -28,7 +40,72 @@ export interface CapabilityReport {
     climbResponse: number; sinkResponse: number; glideRatio: number; stability: number;
   };
   goals: Record<EvolutionGoal, { status: CapabilityStatus; reason: string }>;
+  flight: FlightFeasibility;
   caveat: string;
+}
+
+/** Ideal wing loading proxy band for sustained glide (mass / aeroArea). */
+const WING_LOAD_IDEAL_MAX = 1.1;
+const WING_LOAD_HARD_MAX = 2.4;
+const GLIDE_RATIO_MIN = 0.55;
+
+export function analyzeFlightFeasibility(
+  mass: number,
+  aeroArea: number,
+  glideRatio: number,
+  hasParachute: boolean
+): FlightFeasibility {
+  if (aeroArea <= 0) {
+    return {
+      verdict: 'no aero',
+      summary: 'No aerodynamic surface — cannot generate lift or drag.',
+      mass: { value: mass, hint: 'ok', note: 'Mass alone does not fly.' },
+      aeroArea: { value: 0, hint: 'up', note: 'Add wing, paraglider, or parachute area.' },
+      wingLoading: { value: null, hint: 'down', note: 'Reduce mass or add area.' },
+      glideRatio: { value: 0, hint: 'up', note: 'Needs aero area relative to mass.' },
+    };
+  }
+  const wingLoading = mass / aeroArea;
+  const tooHeavy = wingLoading > WING_LOAD_HARD_MAX;
+  const heavy = wingLoading > WING_LOAD_IDEAL_MAX;
+  const weakGlide = glideRatio < GLIDE_RATIO_MIN;
+  let verdict: FlightFeasibility['verdict'] = 'likely';
+  if (tooHeavy || (heavy && weakGlide)) verdict = 'unlikely';
+  else if (heavy || weakGlide) verdict = 'marginal';
+  const summary =
+    verdict === 'likely'
+      ? hasParachute
+        ? 'Structure can plausibly slow a fall — chute area looks adequate.'
+        : 'Structure can plausibly sustain flight or glide.'
+      : verdict === 'marginal'
+        ? 'Borderline — may hop or sink slowly; more area or less mass would help.'
+        : 'Too heavy for the available wing/chute area — expect a hard landing.';
+  return {
+    verdict,
+    summary,
+    mass: {
+      value: mass,
+      hint: heavy ? 'down' : 'ok',
+      note: heavy ? 'Lower mass improves lift margin.' : 'Mass is within a workable band.',
+    },
+    aeroArea: {
+      value: aeroArea,
+      hint: heavy || weakGlide ? 'up' : 'ok',
+      note: heavy || weakGlide ? 'Increase wing/chute area.' : 'Area looks sufficient.',
+    },
+    wingLoading: {
+      value: wingLoading,
+      hint: heavy ? 'down' : 'ok',
+      note: heavy
+        ? `Loading ${wingLoading.toFixed(2)} exceeds ideal ~${WING_LOAD_IDEAL_MAX}.`
+        : `Loading ${wingLoading.toFixed(2)} is in a workable band.`,
+    },
+    glideRatio: {
+      value: glideRatio,
+      hint: weakGlide ? 'up' : 'ok',
+      note: weakGlide ? 'More area per unit mass needed.' : 'Glide proxy looks adequate.',
+    },
+  };
 }
 
 export function analyzeCapability(blueprint: CreatureBlueprint, seedInput = 21004): CapabilityReport {
@@ -91,9 +168,17 @@ export function analyzeCapability(blueprint: CreatureBlueprint, seedInput = 2100
       EvolutionGoal.FLIGHT_LEFT, EvolutionGoal.FLIGHT_AIRSPEED, EvolutionGoal.FLIGHT_LAND,
       EvolutionGoal.FLIGHT_ACROBATICS, EvolutionGoal.GLIDE_RANGE, EvolutionGoal.AERIAL_CROSSING,
       EvolutionGoal.PARA_RAMP_GLIDE,
+      EvolutionGoal.CHUTE_DESCENT,
     ].includes(goal)) {
-      status = traits.hasAero ? 'equipped' : 'missing prerequisite';
-      reason = traits.hasAero ? `${aeroArea.toFixed(0)} area proxy; sustained flight remains unproven.` : 'Requires an aerodynamic surface.';
+      if (goal === EvolutionGoal.CHUTE_DESCENT) {
+        status = traits.hasParachute ? 'equipped' : 'missing prerequisite';
+        reason = traits.hasParachute
+          ? `${aeroArea.toFixed(0)} chute area; controlled landing remains unproven.`
+          : 'Requires at least one parachute surface.';
+      } else {
+        status = traits.hasAero ? 'equipped' : 'missing prerequisite';
+        reason = traits.hasAero ? `${aeroArea.toFixed(0)} area proxy; sustained flight remains unproven.` : 'Requires an aerodynamic surface.';
+      }
     } else if ([
       EvolutionGoal.HIGH_JUMP, EvolutionGoal.CLEAR_BAR, EvolutionGoal.JUMP_LAND_UPRIGHT,
       EvolutionGoal.LONG_JUMP, EvolutionGoal.JUMP_HANG_TIME, EvolutionGoal.JUMP_LEFT,
@@ -124,6 +209,7 @@ export function analyzeCapability(blueprint: CreatureBlueprint, seedInput = 2100
       glideRatio, stability,
     },
     goals,
+    flight: analyzeFlightFeasibility(mass, aeroArea, glideRatio, traits.hasParachute),
     caveat: 'Deterministic bounded pulses are diagnostics, not fitness, competition score, or proof of learning. A learned policy may perform better or worse.',
   };
 }

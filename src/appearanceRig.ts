@@ -33,6 +33,48 @@ export interface AppearanceSkeleton {
   id?: string;
 }
 
+/** Empty cosmetic rig — skeleton-only until the author adds skin in Studio. */
+export function createEmptyAppearanceRig(): AppearanceRig {
+  return { version: 1, hideSkeleton: false, primitives: [] };
+}
+
+/** Remove cosmetic skin / Kenney body-library parts from persisted rigs. */
+export function stripSkinAndBodyLibraryParts(
+  rig: AppearanceRig | undefined
+): AppearanceRig | undefined {
+  if (!rig) return undefined;
+  const primitives = rig.primitives.filter(part => {
+    if (part.kind === 'bodyPart') return false;
+    if (part.id.startsWith('skin-part-')) return false;
+    if (
+      part.id.startsWith('limb-') ||
+      part.id.startsWith('joint-skin-') ||
+      part.id.startsWith('leaf-') ||
+      part.id.startsWith('fox-') ||
+      part.id.startsWith('ocean-') ||
+      part.id.startsWith('plum-')
+    ) {
+      return false;
+    }
+    const cosmeticKinds = new Set([
+      'ellipse',
+      'capsule',
+      'polygon',
+      'stroke',
+      'eye',
+      'googlyEye',
+      'fin',
+      'ear',
+      'tail',
+      'patch',
+      'rigidPlate',
+    ]);
+    return !(part.kind && cosmeticKinds.has(part.kind));
+  });
+  if (primitives.length === 0) return undefined;
+  return { ...rig, primitives };
+}
+
 export function sanitizeAppearanceRig(value: unknown): AppearanceRig {
   const rig = value as AppearanceRig;
   const allowedKinds = new Set([
@@ -54,17 +96,23 @@ export function sanitizeAppearanceRig(value: unknown): AppearanceRig {
         part && typeof part.id === 'string' && Array.isArray(part.points)
         && (part.layer === 'behind' || part.layer === 'front')
         && (!part.kind || allowedKinds.has(part.kind))
-      ).map(part => ({
-        ...part,
-        z: Number.isFinite(part.z) ? part.z : 0,
-        opacity: Math.max(0, Math.min(1, Number.isFinite(part.opacity) ? part.opacity : 1)),
-        assetId: typeof part.assetId === 'string' ? part.assetId : undefined,
-        boneAlign: part.boneAlign === true ? true : undefined,
-        boneStretch: part.boneStretch === true ? true : undefined,
-        boneRestLength: Number.isFinite(part.boneRestLength) && part.boneRestLength > 0
-          ? part.boneRestLength
-          : undefined,
-      }))
+      ).map(part => {
+        // Omit optional fields instead of writing explicit `undefined` keys:
+        // JSON persistence drops undefined keys, so deep-equality between a
+        // sanitized rig and its saved round-trip would otherwise diverge.
+        const cleaned = {
+          ...part,
+          z: Number.isFinite(part.z) ? part.z : 0,
+          opacity: Math.max(0, Math.min(1, Number.isFinite(part.opacity) ? part.opacity : 1)),
+        };
+        if (typeof part.assetId !== 'string') delete cleaned.assetId;
+        if (part.boneAlign !== true) delete cleaned.boneAlign;
+        if (part.boneStretch !== true) delete cleaned.boneStretch;
+        if (!(Number.isFinite(part.boneRestLength) && (part.boneRestLength as number) > 0)) {
+          delete cleaned.boneRestLength;
+        }
+        return cleaned;
+      })
     : [];
   return { version: 1, hideSkeleton: !!rig?.hideSkeleton, primitives };
 }

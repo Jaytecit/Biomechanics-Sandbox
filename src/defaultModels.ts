@@ -7,6 +7,7 @@
  */
 
 import { CreatureBlueprint, EvolutionGoal, Genome } from './types';
+import { CREATURE_WORLD_SCALE, scaleCreatureBlueprint } from './creatureScale';
 
 export type DefaultModelSeed = {
   id: string;
@@ -19,246 +20,605 @@ export type DefaultModelSeed = {
   genome: Genome;
 };
 
-export const DEFAULT_MODEL_SEEDS: DefaultModelSeed[] = [
+const LEGACY_DEFAULT_MODEL_SEEDS: DefaultModelSeed[] = [
   {
     id: "builtin_sprongo",
     name: "Sprongo",
-    generation: 6,
-    fitness: 603.7442634387736,
+    generation: 74,
+    fitness: 1018.9164589210701,
     trainedGoal: EvolutionGoal.LOCOMOTION_RIGHT,
-    createdAt: "2026-07-29T10:58:00.750Z",
+    createdAt: "2026-07-30T15:51:01.056Z",
     blueprint: {
-        "name": "Sprongo",
-        "nodes": [
-            {
-                "id": 0,
-                "mass": 1.5,
-                "radius": 10,
-                "friction": 0.5,
-                "color": "#f59e0b",
-                "isWheel": false,
-                "isMotorWheel": false,
-                "isFoot": false,
-                "isHingeStop": false
-            },
-            {
-                "id": 1,
-                "mass": 1.5,
-                "radius": 10,
-                "friction": 1,
-                "color": "#f59e0b",
-                "isWheel": false,
-                "isMotorWheel": false,
-                "isFoot": true,
-                "isHingeStop": false
-            },
-            {
-                "id": 2,
-                "mass": 1.5,
-                "radius": 10,
-                "friction": 1,
-                "color": "#ec4899",
-                "isWheel": false,
-                "isMotorWheel": false,
-                "isFoot": true,
-                "isHingeStop": false
-            }
-        ],
-        "muscles": [
-            {
-                "id": 0,
-                "nodeA": 2,
-                "nodeB": 0,
-                "originalLength": 95,
-                "minLength": 95,
-                "maxLength": 95,
-                "strength": 1,
-                "phaseOffset": 0,
-                "thickness": 1,
-                "linkKind": "bone"
-            },
-            {
-                "id": 1,
-                "nodeA": 0,
-                "nodeB": 1,
-                "originalLength": 95,
-                "minLength": 95,
-                "maxLength": 95,
-                "strength": 1,
-                "phaseOffset": 0,
-                "thickness": 1,
-                "linkKind": "bone"
-            },
-            {
-                "id": 2,
-                "nodeA": 2,
-                "nodeB": 1,
-                "originalLength": 89,
-                "minLength": 10,
-                "maxLength": 178,
-                "strength": 0.6,
-                "phaseOffset": 0,
-                "thickness": 1,
-                "linkKind": "muscle"
-            }
-        ],
-        "relativePositions": [
-            {
-                "x": 180,
-                "y": -90
-            },
-            {
-                "x": 150,
-                "y": 0
-            },
-            {
-                "x": 210,
-                "y": 0
-            }
-        ]
+      "name": "Sprongo",
+      "nodes": [
+        {
+          "id": 0,
+          "mass": 1.5,
+          "radius": 10,
+          "friction": 0.5,
+          "color": "#f59e0b",
+          "isWheel": false,
+          "isMotorWheel": false,
+          "isFoot": false,
+          "isHingeStop": false
+        },
+        {
+          "id": 1,
+          "mass": 1.5,
+          "radius": 10,
+          "friction": 1,
+          "color": "#f59e0b",
+          "isWheel": false,
+          "isMotorWheel": false,
+          "isFoot": true,
+          "isHingeStop": false
+        },
+        {
+          "id": 2,
+          "mass": 1.5,
+          "radius": 10,
+          "friction": 1,
+          "color": "#ec4899",
+          "isWheel": false,
+          "isMotorWheel": false,
+          "isFoot": true,
+          "isHingeStop": false
+        },
+        {
+          "id": 3,
+          "mass": 1.4999999999999998,
+          "radius": 10,
+          "friction": 0.5,
+          "color": "#f59e0b",
+          "isWheel": false,
+          "isMotorWheel": false,
+          "isFoot": true,
+          "isHingeStop": false
+        }
+      ],
+      "muscles": [
+        {
+          "id": 0,
+          "nodeA": 0,
+          "nodeB": 2,
+          "originalLength": 90,
+          "minLength": 80,
+          "maxLength": 180,
+          "strength": 0.9,
+          "phaseOffset": 0,
+          "thickness": 1,
+          "linkKind": "muscle"
+        },
+        {
+          "id": 1,
+          "nodeA": 1,
+          "nodeB": 2,
+          "originalLength": 70,
+          "minLength": 70,
+          "maxLength": 70,
+          "strength": 1,
+          "phaseOffset": 0,
+          "thickness": 1,
+          "linkKind": "bone"
+        },
+        {
+          "id": 2,
+          "nodeA": 3,
+          "nodeB": 0,
+          "originalLength": 90,
+          "minLength": 80,
+          "maxLength": 180,
+          "strength": 0.6,
+          "phaseOffset": 0,
+          "thickness": 1,
+          "linkKind": "muscle"
+        },
+        {
+          "id": 3,
+          "nodeA": 3,
+          "nodeB": 1,
+          "originalLength": 50,
+          "minLength": 40,
+          "maxLength": 100,
+          "strength": 0.6,
+          "phaseOffset": 0,
+          "thickness": 1,
+          "linkKind": "muscle"
+        },
+        {
+          "id": 4,
+          "nodeA": 0,
+          "nodeB": 1,
+          "originalLength": 150,
+          "minLength": 150,
+          "maxLength": 150,
+          "strength": 1,
+          "phaseOffset": 0,
+          "thickness": 1,
+          "linkKind": "bone"
+        }
+      ],
+      "relativePositions": [
+        {
+          "x": -120,
+          "y": -150
+        },
+        {
+          "x": -120,
+          "y": 0
+        },
+        {
+          "x": -60,
+          "y": -30
+        },
+        {
+          "x": -180,
+          "y": -30
+        }
+      ]
     },
     genome: {
-        "nodes": [
-            {
-                "id": 0,
-                "type": "input",
-                "label": "Input 0"
-            },
-            {
-                "id": 1,
-                "type": "input",
-                "label": "Input 1"
-            },
-            {
-                "id": 2,
-                "type": "input",
-                "label": "Input 2"
-            },
-            {
-                "id": 3,
-                "type": "input",
-                "label": "Input 3"
-            },
-            {
-                "id": 4,
-                "type": "input",
-                "label": "Input 4"
-            },
-            {
-                "id": 5,
-                "type": "input",
-                "label": "Input 5"
-            },
-            {
-                "id": 6,
-                "type": "input",
-                "label": "Input 6"
-            },
-            {
-                "id": 7,
-                "type": "input",
-                "label": "Input 7"
-            },
-            {
-                "id": 8,
-                "type": "input",
-                "label": "Input 8"
-            },
-            {
-                "id": 9,
-                "type": "input",
-                "label": "Input 9"
-            },
-            {
-                "id": 10,
-                "type": "input",
-                "label": "Input 10"
-            },
-            {
-                "id": 11,
-                "type": "output",
-                "label": "Output 0"
-            }
-        ],
-        "connections": [
-            {
-                "fromNode": 0,
-                "toNode": 11,
-                "weight": 0.39816080009661425,
-                "enabled": true,
-                "innovation": 41309
-            },
-            {
-                "fromNode": 1,
-                "toNode": 11,
-                "weight": 0.4024814991986905,
-                "enabled": true,
-                "innovation": 41310
-            },
-            {
-                "fromNode": 2,
-                "toNode": 11,
-                "weight": 0.38521954960174587,
-                "enabled": true,
-                "innovation": 41311
-            },
-            {
-                "fromNode": 3,
-                "toNode": 11,
-                "weight": 0.002357026890254077,
-                "enabled": true,
-                "innovation": 41312
-            },
-            {
-                "fromNode": 4,
-                "toNode": 11,
-                "weight": 0.31844042354636704,
-                "enabled": true,
-                "innovation": 41313
-            },
-            {
-                "fromNode": 5,
-                "toNode": 11,
-                "weight": -0.0013613771529661367,
-                "enabled": true,
-                "innovation": 41314
-            },
-            {
-                "fromNode": 6,
-                "toNode": 11,
-                "weight": 0.2951529409936251,
-                "enabled": true,
-                "innovation": 41315
-            },
-            {
-                "fromNode": 7,
-                "toNode": 11,
-                "weight": -0.2706774144472981,
-                "enabled": true,
-                "innovation": 41316
-            },
-            {
-                "fromNode": 8,
-                "toNode": 11,
-                "weight": -0.38445179054725376,
-                "enabled": true,
-                "innovation": 41317
-            },
-            {
-                "fromNode": 9,
-                "toNode": 11,
-                "weight": 0.12291542187240179,
-                "enabled": true,
-                "innovation": 41318
-            },
-            {
-                "fromNode": 10,
-                "toNode": 11,
-                "weight": -0.38095767713668494,
-                "enabled": true,
-                "innovation": 41319
-            }
-        ]
+      "nodes": [
+        {
+          "id": 0,
+          "type": "input",
+          "label": "Input 0"
+        },
+        {
+          "id": 1,
+          "type": "input",
+          "label": "Input 1"
+        },
+        {
+          "id": 2,
+          "type": "input",
+          "label": "Input 2"
+        },
+        {
+          "id": 3,
+          "type": "input",
+          "label": "Input 3"
+        },
+        {
+          "id": 4,
+          "type": "input",
+          "label": "Input 4"
+        },
+        {
+          "id": 5,
+          "type": "input",
+          "label": "Input 5"
+        },
+        {
+          "id": 6,
+          "type": "input",
+          "label": "Input 6"
+        },
+        {
+          "id": 7,
+          "type": "input",
+          "label": "Input 7"
+        },
+        {
+          "id": 8,
+          "type": "input",
+          "label": "Input 8"
+        },
+        {
+          "id": 9,
+          "type": "input",
+          "label": "Input 9"
+        },
+        {
+          "id": 10,
+          "type": "input",
+          "label": "Input 10"
+        },
+        {
+          "id": 11,
+          "type": "input",
+          "label": "Input 11"
+        },
+        {
+          "id": 12,
+          "type": "input",
+          "label": "Input 12"
+        },
+        {
+          "id": 13,
+          "type": "input",
+          "label": "Input 13"
+        },
+        {
+          "id": 14,
+          "type": "input",
+          "label": "Input 14"
+        },
+        {
+          "id": 15,
+          "type": "input",
+          "label": "Input 15"
+        },
+        {
+          "id": 16,
+          "type": "input",
+          "label": "Input 16"
+        },
+        {
+          "id": 17,
+          "type": "output",
+          "label": "Output 0"
+        },
+        {
+          "id": 18,
+          "type": "output",
+          "label": "Output 1"
+        },
+        {
+          "id": 19,
+          "type": "output",
+          "label": "Output 2"
+        }
+      ],
+      "connections": [
+        {
+          "fromNode": 0,
+          "toNode": 17,
+          "weight": 0.44631384990793954,
+          "enabled": true,
+          "innovation": 3312
+        },
+        {
+          "fromNode": 0,
+          "toNode": 18,
+          "weight": 0.4221717418607017,
+          "enabled": false,
+          "innovation": 3313
+        },
+        {
+          "fromNode": 0,
+          "toNode": 19,
+          "weight": 1.651015377122894,
+          "enabled": true,
+          "innovation": 3314
+        },
+        {
+          "fromNode": 1,
+          "toNode": 17,
+          "weight": 0.2684784748756119,
+          "enabled": true,
+          "innovation": 3315
+        },
+        {
+          "fromNode": 1,
+          "toNode": 18,
+          "weight": -0.9909959897830061,
+          "enabled": true,
+          "innovation": 3316
+        },
+        {
+          "fromNode": 1,
+          "toNode": 19,
+          "weight": 0.48110263281374377,
+          "enabled": true,
+          "innovation": 3317
+        },
+        {
+          "fromNode": 2,
+          "toNode": 17,
+          "weight": 0.11508612702005613,
+          "enabled": true,
+          "innovation": 3318
+        },
+        {
+          "fromNode": 2,
+          "toNode": 18,
+          "weight": -0.2983215464084382,
+          "enabled": true,
+          "innovation": 3319
+        },
+        {
+          "fromNode": 2,
+          "toNode": 19,
+          "weight": -0.17204224226190568,
+          "enabled": true,
+          "innovation": 3320
+        },
+        {
+          "fromNode": 3,
+          "toNode": 17,
+          "weight": 1.3973097923651456,
+          "enabled": true,
+          "innovation": 3321
+        },
+        {
+          "fromNode": 3,
+          "toNode": 18,
+          "weight": -0.5559786374370073,
+          "enabled": false,
+          "innovation": 3322
+        },
+        {
+          "fromNode": 3,
+          "toNode": 19,
+          "weight": 0.14249986018379368,
+          "enabled": true,
+          "innovation": 3323
+        },
+        {
+          "fromNode": 4,
+          "toNode": 17,
+          "weight": -0.8900851091758598,
+          "enabled": true,
+          "innovation": 3324
+        },
+        {
+          "fromNode": 4,
+          "toNode": 18,
+          "weight": 0.7727438793986703,
+          "enabled": true,
+          "innovation": 3325
+        },
+        {
+          "fromNode": 4,
+          "toNode": 19,
+          "weight": -0.4378882584458248,
+          "enabled": true,
+          "innovation": 3326
+        },
+        {
+          "fromNode": 5,
+          "toNode": 17,
+          "weight": 0.23289604530533817,
+          "enabled": true,
+          "innovation": 3327
+        },
+        {
+          "fromNode": 5,
+          "toNode": 18,
+          "weight": 0.5065060651973765,
+          "enabled": true,
+          "innovation": 3328
+        },
+        {
+          "fromNode": 5,
+          "toNode": 19,
+          "weight": 1.2480794473914767,
+          "enabled": true,
+          "innovation": 3329
+        },
+        {
+          "fromNode": 6,
+          "toNode": 17,
+          "weight": 0.18574810539476178,
+          "enabled": true,
+          "innovation": 3330
+        },
+        {
+          "fromNode": 6,
+          "toNode": 18,
+          "weight": 1.0982107670807058,
+          "enabled": true,
+          "innovation": 3331
+        },
+        {
+          "fromNode": 6,
+          "toNode": 19,
+          "weight": 0.2327148630747151,
+          "enabled": true,
+          "innovation": 3332
+        },
+        {
+          "fromNode": 7,
+          "toNode": 17,
+          "weight": -0.13200037406693266,
+          "enabled": true,
+          "innovation": 3333
+        },
+        {
+          "fromNode": 7,
+          "toNode": 18,
+          "weight": -0.6128463996774606,
+          "enabled": true,
+          "innovation": 3334
+        },
+        {
+          "fromNode": 7,
+          "toNode": 19,
+          "weight": -0.00011896075340411816,
+          "enabled": true,
+          "innovation": 3335
+        },
+        {
+          "fromNode": 8,
+          "toNode": 17,
+          "weight": -0.13981137802719035,
+          "enabled": true,
+          "innovation": 3336
+        },
+        {
+          "fromNode": 8,
+          "toNode": 18,
+          "weight": -0.04399140958069879,
+          "enabled": true,
+          "innovation": 3337
+        },
+        {
+          "fromNode": 8,
+          "toNode": 19,
+          "weight": 0.2809535294398051,
+          "enabled": true,
+          "innovation": 3338
+        },
+        {
+          "fromNode": 9,
+          "toNode": 17,
+          "weight": 1.1037614431686131,
+          "enabled": true,
+          "innovation": 3339
+        },
+        {
+          "fromNode": 9,
+          "toNode": 18,
+          "weight": -0.12363183874457237,
+          "enabled": true,
+          "innovation": 3340
+        },
+        {
+          "fromNode": 9,
+          "toNode": 19,
+          "weight": -0.47924338604612715,
+          "enabled": true,
+          "innovation": 3341
+        },
+        {
+          "fromNode": 10,
+          "toNode": 17,
+          "weight": 0.2652940015093379,
+          "enabled": true,
+          "innovation": 3342
+        },
+        {
+          "fromNode": 10,
+          "toNode": 18,
+          "weight": 0.2650619033760442,
+          "enabled": true,
+          "innovation": 3343
+        },
+        {
+          "fromNode": 10,
+          "toNode": 19,
+          "weight": -0.2703242636093456,
+          "enabled": true,
+          "innovation": 3344
+        },
+        {
+          "fromNode": 11,
+          "toNode": 17,
+          "weight": -0.023839884528674554,
+          "enabled": true,
+          "innovation": 3345
+        },
+        {
+          "fromNode": 11,
+          "toNode": 18,
+          "weight": -0.012975440775219331,
+          "enabled": true,
+          "innovation": 3346
+        },
+        {
+          "fromNode": 11,
+          "toNode": 19,
+          "weight": -0.11956365346894743,
+          "enabled": true,
+          "innovation": 3347
+        },
+        {
+          "fromNode": 12,
+          "toNode": 17,
+          "weight": -0.7641510528315267,
+          "enabled": true,
+          "innovation": 3348
+        },
+        {
+          "fromNode": 12,
+          "toNode": 18,
+          "weight": -0.0049909173483399655,
+          "enabled": true,
+          "innovation": 3349
+        },
+        {
+          "fromNode": 12,
+          "toNode": 19,
+          "weight": 0.2785691361546935,
+          "enabled": true,
+          "innovation": 3350
+        },
+        {
+          "fromNode": 13,
+          "toNode": 17,
+          "weight": 0.4146417112501533,
+          "enabled": true,
+          "innovation": 3351
+        },
+        {
+          "fromNode": 13,
+          "toNode": 18,
+          "weight": 0.13096720052464594,
+          "enabled": true,
+          "innovation": 3352
+        },
+        {
+          "fromNode": 13,
+          "toNode": 19,
+          "weight": 0.3746312825614503,
+          "enabled": true,
+          "innovation": 3353
+        },
+        {
+          "fromNode": 14,
+          "toNode": 17,
+          "weight": -0.9754818407086719,
+          "enabled": true,
+          "innovation": 3354
+        },
+        {
+          "fromNode": 14,
+          "toNode": 18,
+          "weight": -0.09921095063036314,
+          "enabled": true,
+          "innovation": 3355
+        },
+        {
+          "fromNode": 14,
+          "toNode": 19,
+          "weight": 0.560534402675572,
+          "enabled": true,
+          "innovation": 3356
+        },
+        {
+          "fromNode": 15,
+          "toNode": 17,
+          "weight": -0.44046161570706643,
+          "enabled": true,
+          "innovation": 3357
+        },
+        {
+          "fromNode": 15,
+          "toNode": 18,
+          "weight": -0.015436885017153068,
+          "enabled": true,
+          "innovation": 3358
+        },
+        {
+          "fromNode": 15,
+          "toNode": 19,
+          "weight": 0.9363321522668682,
+          "enabled": true,
+          "innovation": 3359
+        },
+        {
+          "fromNode": 16,
+          "toNode": 17,
+          "weight": 0.19343530865872627,
+          "enabled": true,
+          "innovation": 3360
+        },
+        {
+          "fromNode": 16,
+          "toNode": 18,
+          "weight": -0.04525677808005804,
+          "enabled": true,
+          "innovation": 3361
+        },
+        {
+          "fromNode": 16,
+          "toNode": 19,
+          "weight": -0.5105685968671743,
+          "enabled": true,
+          "innovation": 3362
+        }
+      ]
     },
   },
   {
@@ -5330,6 +5690,11 @@ export const DEFAULT_MODEL_SEEDS: DefaultModelSeed[] = [
     },
   }
 ];
+
+export const DEFAULT_MODEL_SEEDS: DefaultModelSeed[] = LEGACY_DEFAULT_MODEL_SEEDS.map(seed => ({
+  ...seed,
+  blueprint: scaleCreatureBlueprint(seed.blueprint, CREATURE_WORLD_SCALE),
+}));
 
 export const DEFAULT_FINISHED_MODEL_IDS = new Set(
   DEFAULT_MODEL_SEEDS.map(s => s.id)

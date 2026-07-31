@@ -25,7 +25,7 @@ const TRIAL_FRAMES = 180;
 /** Flapper must sink this much slower than inert (fraction of inert Δy). */
 const SINK_IMPROVEMENT = 0.12;
 /** Absolute minimum Δy gap (inert − flap) in px over the trial. */
-const MIN_DY_GAP = 8;
+const MIN_DY_GAP = 0.8;
 /** Require this many distinct ICs to pass with the pinned reference stroke. */
 const REQUIRED_ICS = 3;
 
@@ -37,11 +37,11 @@ const INITIAL_CONDITIONS: Array<{
   /** Tip Δy vs body (negative = tips higher). */
   tipDeltaY: number;
 }> = [
-  { id: 0, clearance: 160, launchVx: 0, tipDeltaY: -25 },
-  { id: 1, clearance: 140, launchVx: 1.5, tipDeltaY: -20 },
-  { id: 2, clearance: 180, launchVx: -1.2, tipDeltaY: -30 },
-  { id: 3, clearance: 150, launchVx: 2.5, tipDeltaY: -18 },
-  { id: 4, clearance: 170, launchVx: 0.8, tipDeltaY: -28 },
+  { id: 0, clearance: 80, launchVx: 0, tipDeltaY: -2.5 },
+  { id: 1, clearance: 70, launchVx: 1.5, tipDeltaY: -2.0 },
+  { id: 2, clearance: 90, launchVx: -1.2, tipDeltaY: -3.0 },
+  { id: 3, clearance: 75, launchVx: 2.5, tipDeltaY: -1.8 },
+  { id: 4, clearance: 85, launchVx: 0.8, tipDeltaY: -2.8 },
 ];
 
 type StrokeKind =
@@ -60,11 +60,11 @@ interface StrokeParams {
   foot: number;
 }
 
-/** Pinned reference stroke (grid winner; reconstructable exit criterion). */
+/** Pinned reference stroke (world-scale RoboBird grid winner). */
 const REFERENCE_STROKE: StrokeParams = {
-  kind: 'sine_inphase',
-  amp: 0.55,
-  omega: 0.4,
+  kind: 'fast_contract',
+  amp: 0.95,
+  omega: 0.18,
   foot: -0.35,
 };
 
@@ -104,8 +104,8 @@ function cfg(): SimulationConfig {
 }
 
 function flapperBlueprint(): CreatureBlueprint {
-  const t = CREATURE_TEMPLATES.find(b => b.name === 'Flapper');
-  if (!t) throw new Error('Missing Flapper template');
+  const t = CREATURE_TEMPLATES.find(b => b.name === 'RoboBird' || b.name === 'Flapper');
+  if (!t) throw new Error('Missing RoboBird/Flapper template');
   return t;
 }
 
@@ -131,15 +131,23 @@ function spawnAirborne(
     1
   );
 
-  // Apply tip incidence + launch vx after spawn (body/foot stay; tips re-aimed).
+  // Aim wing tips: outermost endpoints of aero wing muscles (not hardcoded legacy span).
   const body = creature.nodes[0];
-  const tipL = creature.nodes[1];
-  const tipR = creature.nodes[2];
-  const span = 55;
-  tipL.x = body.x - span;
-  tipR.x = body.x + span;
-  tipL.y = body.y + ic.tipDeltaY;
-  tipR.y = body.y + ic.tipDeltaY;
+  const wingMuscles = creature.muscles.filter(m => m.aeroType === 'wing');
+  const tipIds = new Set<number>();
+  for (const m of wingMuscles) {
+    const a = creature.nodes[m.nodeA];
+    const b = creature.nodes[m.nodeB];
+    if (!a || !b) continue;
+    const tip = Math.hypot(a.x - body.x, a.y - body.y) >= Math.hypot(b.x - body.x, b.y - body.y) ? a : b;
+    tipIds.add(tip.id);
+  }
+  const tips = [...tipIds].map(id => creature.nodes.find(n => n.id === id)!).filter(Boolean);
+  tips.sort((u, v) => u.x - v.x);
+  if (tips.length >= 2) {
+    tips[0].y = body.y + ic.tipDeltaY;
+    tips[tips.length - 1].y = body.y + ic.tipDeltaY;
+  }
 
   for (const n of creature.nodes) {
     n.oldX = n.x - ic.launchVx;

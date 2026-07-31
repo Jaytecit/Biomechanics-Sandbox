@@ -101,7 +101,7 @@ function strutLength(creature: Creature): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
-assert(SOFT_BODY_PHYSICS_VERSION === '4.21.0', `expected physics 4.21.0, got ${SOFT_BODY_PHYSICS_VERSION}`);
+assert(SOFT_BODY_PHYSICS_VERSION === '4.26.0', `expected physics 4.26.0, got ${SOFT_BODY_PHYSICS_VERSION}`);
 
 {
   const blueprint = pistonBlueprint({ extendRate: 2, retractRate: 2 });

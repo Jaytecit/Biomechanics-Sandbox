@@ -18,6 +18,7 @@ import {
   SimulationConfig,
   genomeIOForBlueprint,
 } from '../src/types';
+import { CREATURE_WORLD_SCALE, scaleCreatureBlueprint } from '../src/creatureScale';
 
 function groundedSpawnY(blueprint: CreatureBlueprint): number {
   const lowestRelative = Math.max(
@@ -36,7 +37,7 @@ function config(
 ): SimulationConfig {
   return {
     populationSize: 1,
-    generationDuration: 1400,
+    generationDuration: 20000,
     simulationSpeed: 1,
     mutationRate: 0.3,
     addNodeRate: 0,
@@ -59,47 +60,51 @@ function config(
 }
 
 function spawn(id: string, difficulty = 1) {
-  // Dedicated motor-only probe body (shipped carts also carry aero surfaces).
-  const blueprint: CreatureBlueprint = {
-    name: 'Terrain Probe Cart',
-    nodes: [
-      { id: 0, mass: 2, radius: 11, friction: 0.2, color: '#64748b' },
-      { id: 1, mass: 2, radius: 11, friction: 0.2, color: '#475569' },
-      {
-        id: 2,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#f59e0b',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 0.55,
-      },
-      {
-        id: 3,
-        mass: 1.5,
-        radius: 12,
-        friction: 0.05,
-        color: '#d97706',
-        isWheel: true,
-        isMotorWheel: true,
-        motorPower: 0.55,
-      },
-    ],
-    muscles: [
-      { id: 0, nodeA: 0, nodeB: 1, originalLength: 70, minLength: 70, maxLength: 70, strength: 1, phaseOffset: 0 },
-      { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
-      { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
-      { id: 3, nodeA: 0, nodeB: 3, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
-      { id: 4, nodeA: 1, nodeB: 2, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
-    ],
-    relativePositions: [
-      { x: -28, y: -38 },
-      { x: 28, y: -38 },
-      { x: -32, y: -12 },
-      { x: 32, y: -12 },
-    ],
-  };
+  // Dedicated motor-only probe (no aero). Authored in legacy units then scaled
+  // to CREATURE_WORLD_SCALE so drive/mass/geometry stay consistent with carts.
+  const blueprint = scaleCreatureBlueprint(
+    {
+      name: 'Terrain Probe Cart',
+      nodes: [
+        { id: 0, mass: 2, radius: 11, friction: 0.2, color: '#64748b' },
+        { id: 1, mass: 2, radius: 11, friction: 0.2, color: '#475569' },
+        {
+          id: 2,
+          mass: 1.5,
+          radius: 12,
+          friction: 0.05,
+          color: '#f59e0b',
+          isWheel: true,
+          isMotorWheel: true,
+          motorPower: 8,
+        },
+        {
+          id: 3,
+          mass: 1.5,
+          radius: 12,
+          friction: 0.05,
+          color: '#d97706',
+          isWheel: true,
+          isMotorWheel: true,
+          motorPower: 8,
+        },
+      ],
+      muscles: [
+        { id: 0, nodeA: 0, nodeB: 1, originalLength: 70, minLength: 70, maxLength: 70, strength: 1, phaseOffset: 0 },
+        { id: 1, nodeA: 0, nodeB: 2, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
+        { id: 2, nodeA: 1, nodeB: 3, originalLength: 28, minLength: 28, maxLength: 28, strength: 1, phaseOffset: 0 },
+        { id: 3, nodeA: 0, nodeB: 3, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
+        { id: 4, nodeA: 1, nodeB: 2, originalLength: 78, minLength: 78, maxLength: 78, strength: 1, phaseOffset: 0 },
+      ],
+      relativePositions: [
+        { x: -28, y: -38 },
+        { x: 28, y: -38 },
+        { x: -32, y: -12 },
+        { x: 32, y: -12 },
+      ],
+    },
+    CREATURE_WORLD_SCALE
+  );
   const io = genomeIOForBlueprint(blueprint);
   return spawnCreature(
     {
@@ -175,7 +180,7 @@ const reference = runReference('g1-reference');
 assert.equal(reference.creature.checkpointReached, 2);
 assert.equal(reference.creature.crossedFinish, true);
 assert.ok(
-  reference.creature.fitness > 1250 && reference.creature.fitness <= 1350,
+  reference.creature.fitness >= 1250 && reference.creature.fitness <= 1350,
   `reference completion should include bounded finish-time credit, got ${reference.creature.fitness}`
 );
 

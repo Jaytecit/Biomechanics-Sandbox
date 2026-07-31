@@ -147,6 +147,9 @@ export function eventById(id: string): ChampionshipEvent | undefined {
 export function buildEventArena(event: ChampionshipEvent): ArenaModifiers {
   return {
     ...DEFAULT_ARENA_MODIFIERS,
+    terrainEnabled: true,
+    terrainObstaclesEnabled: true,
+    terrainSeed: 84007,
     ...event.arena,
   };
 }

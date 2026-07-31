@@ -1,7 +1,16 @@
 @import "tailwindcss";
 
+:root {
+  --brand-ink: #0f172a;
+  --brand-muted: #64748b;
+  --brand-accent: #c2410c;
+  --brand-mark: #0f766e;
+  --font-display: "Syne", ui-sans-serif, system-ui, sans-serif;
+  --font-tagline: "Fraunces", ui-serif, Georgia, serif;
+}
+
 :focus-visible {
-  outline: 3px solid #6366f1;
+  outline: 3px solid #0f766e;
   outline-offset: 2px;
 }
 

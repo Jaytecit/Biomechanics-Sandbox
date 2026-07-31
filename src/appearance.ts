@@ -1,4 +1,5 @@
 import { AppearanceRig } from './creaturePackages';
+import { creatureDrawPx } from './creatureScale';
 import {
   createGooglyEyePairPrimitive,
   drawGooglyEyePair,
@@ -10,6 +11,7 @@ export {
   type AppearanceSkeleton,
   sanitizeAppearanceRig,
   createBiologicalPreset,
+  createEmptyAppearanceRig,
   deformRigPoint,
   pointForPart,
 } from './appearanceRig';
@@ -54,13 +56,13 @@ export function drawAppearance(
       const b = muscle && creature.nodes[muscle.nodeB];
       if (a && b) {
         const width = Math.abs(part.points[1]?.y ?? 0);
-        ctx.lineWidth = width > 0 ? width : Math.max(7, Math.min(a.radius, b.radius) * 1.35);
+        ctx.lineWidth = width > 0 ? width : Math.max(creatureDrawPx(7), Math.min(a.radius, b.radius) * 1.35);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.strokeStyle = part.fill;
         ctx.stroke();
-        ctx.lineWidth = Math.max(1.5, Math.min(3, ctx.lineWidth * 0.12));
+        ctx.lineWidth = Math.max(creatureDrawPx(1.5), Math.min(creatureDrawPx(3), ctx.lineWidth * 0.12));
         ctx.strokeStyle = part.stroke;
         ctx.stroke();
       }
@@ -68,8 +70,8 @@ export function drawAppearance(
       const centerPoint = part.points[0] ?? { x: 0, y: 0 };
       const sizePoint = part.points[1] ?? { x: 10, y: 8 };
       const center = pointForPart(part, centerPoint, creature);
-      const radiusX = Math.max(2, Math.abs(sizePoint.x));
-      const radiusY = Math.max(2, Math.abs(sizePoint.y));
+      const radiusX = Math.max(creatureDrawPx(2), Math.abs(sizePoint.x));
+      const radiusY = Math.max(creatureDrawPx(2), Math.abs(sizePoint.y));
       let rotation = 0;
       if (part.anchorMuscle !== undefined) {
         const muscle = creature.muscles[part.anchorMuscle];
@@ -80,7 +82,7 @@ export function drawAppearance(
       ctx.beginPath();
       ctx.ellipse(center.x, center.y, radiusX, radiusY, rotation, 0, Math.PI * 2);
       ctx.fill();
-      ctx.lineWidth = 2;
+      ctx.lineWidth = creatureDrawPx(2);
       ctx.stroke();
     } else if (part.kind === 'eye' && part.anchorNode !== undefined) {
       const anchor = creature.nodes[part.anchorNode];
@@ -88,11 +90,11 @@ export function drawAppearance(
         const px = anchor.x + (part.points[0]?.x ?? 0) * anchor.radius;
         const py = anchor.y + (part.points[0]?.y ?? 0) * anchor.radius;
         ctx.beginPath();
-        ctx.arc(px, py, Math.max(3, anchor.radius * 0.38), 0, Math.PI * 2);
+        ctx.arc(px, py, Math.max(creatureDrawPx(3), anchor.radius * 0.38), 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.beginPath();
-        ctx.arc(px + anchor.radius * 0.12, py, Math.max(1.5, anchor.radius * 0.13), 0, Math.PI * 2);
+        ctx.arc(px + anchor.radius * 0.12, py, Math.max(creatureDrawPx(1.5), anchor.radius * 0.13), 0, Math.PI * 2);
         ctx.fillStyle = '#111827';
         ctx.fill();
       }
@@ -112,7 +114,7 @@ export function drawAppearance(
         ctx.closePath();
         ctx.fill();
       }
-      ctx.lineWidth = 2;
+      ctx.lineWidth = creatureDrawPx(2);
       ctx.stroke();
     }
     ctx.restore();

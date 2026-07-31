@@ -2,7 +2,7 @@
 
 An interactive **2D soft-body biomechanics sandbox** for designing creature anatomies and evolving locomotion with **NEAT** neural networks. Build skeletons, dress them as biological creatures, train them on dozens of goals (walk, jump, fly, motor drive, climb, and more), and race finished models in **Arena Championship**.
 
-Physics version: **4.21.0** · Active trainable goals: **49**
+Physics version: **4.22.0** · Active trainable goals: **49**
 
 ---
 
@@ -159,7 +159,7 @@ npm run calibrate:g1
 |------|------|
 | [`PROJECT_STATE.md`](./PROJECT_STATE.md) | Living tip / index |
 | [`COMPLETED.md`](./COMPLETED.md) | What has shipped |
-| [`OUTSTANDING.md`](./OUTSTANDING.md) | Next required work (currently C1 object-relative sensor) |
+| [`OUTSTANDING.md`](./OUTSTANDING.md) | Next required work after C2 |
 | [`DECISIONS.md`](./DECISIONS.md) | Full decision history |
 | [`SANDBOX_DEVELOPMENT_PLAN.md`](./SANDBOX_DEVELOPMENT_PLAN.md) | Phase 21 plan (historical) |
 

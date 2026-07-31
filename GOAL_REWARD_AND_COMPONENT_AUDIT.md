@@ -41,8 +41,8 @@ catalogue conflicts with zone access.
 |---|---|---|---|
 | Run Right | Yes: muscle walker | **Sound (D129)** | Monotonic plant+body frontiers toward +X; fitness capped by body travel; oscillation / slide without plants scores 0. |
 | Run Left | Yes: muscle walker | **Sound (D129)** | Same plant+body frontier rule toward −X. |
-| Max Speed | Partial: copy recommends motor carts unavailable in Walking | **Reshape** | A 45x single-frame peak can reward an impact/constraint impulse. Use a supported speed window or percentile plus meaningful travel; align the copy/category. |
-| Sprint Finish | Partial: Motor Cart advice only works in Free | **Tune** | Checkpoints are supported and ordered, but finish is not support-gated. Require the full sequence and a supported finish. |
+| Max Speed | Partial: copy recommends motor carts unavailable in Walking | **Sound (remediated)** | `peakSupportedSpeed` replaces raw impulse peaks; meaningful travel gate required (`smoke-speed.ts`). |
+| Sprint Finish | Partial: Motor Cart advice only works in Free | **Sound (remediated)** | Finish requires all checkpoints plus support; tier-0 finish distance paired with ~90s recommended generation. |
 | Stay Tall | Yes | **Sound (D100)** | Integrated normalized supported posture; falls penalized; final pose alone cannot win. |
 
 ### Jumping (11)
@@ -96,12 +96,12 @@ catalogue conflicts with zone access.
 |---|---|---|---|
 | Motor Drive | Powered wheels | **Tune** | Endpoint distance does not prove motor work/support in Free. Track powered-wheel-supported displacement. |
 | Motor Ramp | Powered wheels | **Sound** | Supported ramp height dominates; forward shaping is secondary. |
-| Motor Ice Run | Powered wheels | **Tune** | Fitness is identical to Drive and does not prove ice traversal/recovery. Track distance on ice plus successful exit. |
+| Motor Ice Run | Powered wheels | **Sound (remediated)** | `motorIceFitness` tracks ice-supported distance separately from Drive endpoint travel (`smoke-motor-drive-ice.ts`). |
 | Clear the Gap | Launch-capable motor | **Tune** | Full-hull crossing and pit penalty are good, but semantics claim regained support while `gapCleared` does not. Align success or add far-side support. |
 | Launch & Land | Two powered wheels | **Sound / tune eligibility** | Best landing, both-wheel/soft-impact factors, pit penalty, and capped approach are honest. Enforce two wheels. |
 | Hamster Hoop | Partial: copy permits weight shift, Motor zone requires wheels | **Sound** | Grounded travel dominates; loft/outside penalties defeat launch exploits. Align category and copy. |
-| Jump Hurdles | Motor jumper | **Sound** | Unique hurdle bits, whole-hull airborne clearance, solid obstacles, and modest progress are appropriate. Enforce order if required; fix COM copy. |
-| Landspeed | Powered wheels | **Reshape** | A 55x peak can be an impulse. Use a supported rolling window/percentile plus motor work and travel. |
+| Jump Hurdles | Motor jumper | **Sound / tune (remediated)** | Tier-0 supported hull drive-over clearance gives wheeled carts gradient; jump actuators optional at low tier (`smoke-motor-hurdles.ts`). |
+| Landspeed | Powered wheels | **Sound (remediated)** | Min-travel gate blocks grounded spikes; peak land speed plus travel (`smoke-landspeed.ts`). |
 | Bridge Crossing | Powered wheels | **Retired (D108)** | R4 retained a `0/3` learned-policy failure and confirmed the task has no distinct behaviour in strict 2D: a reachable static bridge is ordinary ground driving, while visual width cannot create lateral balance. Removed from selection; legacy enum/scoring remain readable. |
 | Motor Technical Course | Powered wheels | **Sound** | D105 counts checkpoints as `index + 1`, requires ordered supported crossings, gates finish on all checkpoints plus support, and bounds supported-travel shaping below one section. |
 
@@ -109,23 +109,23 @@ catalogue conflicts with zone access.
 
 | Goal | Creature fit | Reward | Farming audit / required change |
 |---|---|---|---|
-| Score a Goal | Object-capable walker | **Sound** | D107 net entry and travel require prior direct creature-ball contact; travel shaping caps at 100 below the 300-point goal. |
-| Bowling | Partial: rules allow the creature to smash pins | **Sound for demolition; poor bowling fit** | Unique pin score is bounded. For bowling skill, require ball-pin causality/foul line; otherwise rename Pin Smash. |
-| Hazard Dash | Locomotion | **Sound** | D103 ordered hazard crossings dominate; finish requires all sections plus support, and upright shaping accrues only on new rightward progress, so camping and endpoint bypass score no completion. |
+| Score a Goal | Object-capable walker | **Sound (remediated)** | Open goal mouth (ball ignores posts); NET aligned to mouth; 300 bonus requires ball in net within 45-frame recent-contact window (`smoke-kick-goal.ts`). |
+| Pin Smash (was Bowling) | Partial: body-ram pins, not bowling | **Sound / honest copy** | Renamed Pin Smash; no ball or pin-pin chain reaction. Unique pin displacement score (`smoke-bowling-pins.ts`). |
+| Hazard Dash | Locomotion | **Sound (remediated)** | Stray DODGEBALL ball removed so object sensors track course geometry; ordered hazard crossings + supported finish unchanged. |
 
 ### Precision (3)
 
 | Goal | Creature fit | Reward | Farming audit / required change |
 |---|---|---|---|
 | Balance Beam | Yes | **Sound** | D104 accumulates distance and posture only through a continuous authored-beam support chain; far-end completion requires traversing 70%, defeating endpoint travel, bypass leaps, and final-pose recovery. |
-| Parking Zone | Partial: valid for walkers, but all guidance describes Motor Cart | **Sound / tune category** | Whole body, support, low speed, upright, and hold-time gates are good. Make it general “Stop in Zone” or move/add Motor Parking. |
-| Hit Targets | Object-capable body | **Sound** | D107 target events require prior direct ball contact; loft unlocks only after a hit and caps below one additional target. |
+| Parking Zone | Partial: valid for walkers, but all guidance describes Motor Cart | **Sound (remediated)** | Body-scaled posture gate allows low wide motor carts; hold-time + support + slow speed unchanged (`smoke-parking-zone.ts`). |
+| Hit Targets | Object-capable body | **Sound (remediated)** | Circle collider aligned to visual; approach shaping before first hit; hits require recent ball contact (`smoke-hit-target.ts`). |
 
 ### Custom (1)
 
 | Goal | Creature fit | Reward | Farming audit / required change |
 |---|---|---|---|
-| Custom Goal | Unrestricted by design | **Reshape** | Metrics are typed but not normalized/exploit-proof. `manual` is a selection-neutral constant, while inherited distance/speed/carry/survival retain their exploits. Show units/ranges, warn on dominance, prohibit constant-only goals, and add event/bout aggregation. |
+| Custom Goal | Unrestricted by design | **Tune (remediated)** | `manual` metric returns 0 (no gradient). Other inherited metrics retain their exploits; show units/ranges and warn on dominance. |
 
 ## New goals using current components
 
@@ -233,9 +233,20 @@ secretly create force are deliberately deferred.
   at `750`, and the deterministic reference exceeds `1320`. Three learned seeds
   pass two held-out physics/course-length variants. The manifest also retains
   Shuttle Run's rejected `0/3` exploratory result.
-- **Next:** C1. Add the object-relative sensor alone, with an explicit bounded
-  observation contract, compatibility advance, package migration, and held-out
-  object-feedback criterion before any physical manipulation component.
+- **Full goal remediation complete (2026-07-29).** Kick Goal mouth geometry and
+  ball/post collision rules fixed; `ballContactFrame` 45-frame window replaces
+  permanent latch. Hit Target circle collider + approach shaping. Bowling renamed
+  Pin Smash; Hazard Dash stray ball removed. `recommendedGenerationDuration`
+  auto-applies on goal change. Tier-0 finish distances (~5× legacy) paired with
+  longer generation for finish-line goals. Speed/Landspeed exploit gates;
+  Motor Ice differentiated scoring; Parking wide-cart posture; Motor Hurdles
+  tier-0 drive-over; Sprint Finish support-gated finish. Eleven new smoke tests
+  wired into `test:phase21`.
+
+- **C2 complete (D147 / `4.23.0`).** Contact/touch sensor: per-node class
+  encoding plus fixed summary pack; observation only; held-out wall-retreat
+  reactive + learn gate. Next component slices (sticky/claw) must stay
+  one-at-a-time. C1 object-relative sensing shipped as D145 (`4.22.0`).
   D128 closed walk/jump/hop reward-truth definitions and added three hop goals
   without changing observation/action I/O. D129 closed the Run Right/Left
   oscillation plant-farm with monotonic plant+body frontiers (physics 4.7.1).

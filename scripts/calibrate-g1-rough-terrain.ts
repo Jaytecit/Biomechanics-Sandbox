@@ -35,7 +35,7 @@ const SCRIPT_VERSION = 1;
 const TRAINING_SEEDS = [101, 202, 303];
 const POPULATION = 12;
 const GENERATIONS = 10;
-const EPISODE_FRAMES = 1400;
+const EPISODE_FRAMES = 14000;
 const HELD_OUT_VARIANTS = [
   { id: 'low-friction-short', difficulty: 0.95, gravity: 0.38, groundFriction: 0.72 },
   { id: 'high-friction-long', difficulty: 1.05, gravity: 0.42, groundFriction: 0.88 },

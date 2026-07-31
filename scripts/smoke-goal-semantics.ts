@@ -44,6 +44,7 @@ for (const goal of GOAL_ORDER) {
 
 assert.match(getGoalInfo(EvolutionGoal.MOTOR_SLALOM).title, /Technical Course/);
 assert.doesNotMatch(getGoalInfo(EvolutionGoal.MOTOR_SLALOM).description, /weave|depth/i);
+assert.match(getGoalInfo(EvolutionGoal.BOWLING_PINS).title, /Pin Smash/);
 assert.match(getGoalInfo(EvolutionGoal.DODGEBALL).title, /Hazard Dash/);
 
 const glideBlueprint =

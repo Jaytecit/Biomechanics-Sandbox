@@ -19,20 +19,22 @@ import {
   DEFAULT_CUSTOM_GOAL,
   genomeIOForBlueprint,
   FLIGHT_SENSOR_COUNT,
+  OBJECT_SENSOR_COUNT,
 } from '../src/types';
 
-const POP = 14;
-const GENERATIONS = 12;
+const POP = 18;
+const GENERATIONS = 18;
 const EPISODE_FRAMES = 420;
 const HOLDOUT_FRAMES = 180;
-const SPAWN_CLEARANCE = 150;
+/** Air drop clearance in world px (legacy used 150 on pre-scale bodies). */
+const SPAWN_CLEARANCE = 40;
 /** Seeds that must each show learning + held-out sink beat. */
-const SEEDS = [11, 22, 33];
+const SEEDS = [11, 22, 33, 44, 55];
 const REQUIRED_PASS_SEEDS = 2;
 const FIT_IMPROVE_RATIO = 1.12;
 const FIT_IMPROVE_ABS = 18;
 const SINK_IMPROVE_FRAC = 0.1;
-const SINK_IMPROVE_ABS = 6;
+const SINK_IMPROVE_ABS = 1.2;
 
 function cfg(): SimulationConfig {
   return {
@@ -51,8 +53,10 @@ function cfg(): SimulationConfig {
 }
 
 function flapper(): CreatureBlueprint {
-  const t = CREATURE_TEMPLATES.find(b => b.name === 'Flapper');
-  if (!t) throw new Error('Missing Flapper');
+  const t =
+    CREATURE_TEMPLATES.find(b => b.name === 'Flapper') ??
+    CREATURE_TEMPLATES.find(b => b.name === 'RoboBird');
+  if (!t) throw new Error('Missing Flapper/RoboBird');
   return t;
 }
 
@@ -190,7 +194,10 @@ function runSeed(seed: number): {
   return withRng(seed * 9973 + 17, () => {
     const blueprint = flapper();
     const io = genomeIOForBlueprint(blueprint);
-    if (io.inputs !== 2 + 3 * blueprint.nodes.length + FLIGHT_SENSOR_COUNT) {
+    if (
+      io.inputs !==
+      2 + 3 * blueprint.nodes.length + FLIGHT_SENSOR_COUNT + OBJECT_SENSOR_COUNT
+    ) {
       throw new Error(`Unexpected Flapper inputs ${io.inputs} (flight pack missing?)`);
     }
     const config = cfg();

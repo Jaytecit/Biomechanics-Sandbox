@@ -6,7 +6,8 @@
  */
 
 import { Creature, EvolutionGoal, SimulationConfig } from './types';
-import { BASE_GAP_WIDTH, clampGapWidthPx } from './physicsConstants';
+import { BASE_GAP_WIDTH, clampGapWidthPx, clampTowerHeightPx } from './physicsConstants';
+import { CREATURE_WORLD_SCALE } from './creatureScale';
 
 const GAP_GOALS = new Set<EvolutionGoal>([
   EvolutionGoal.MOTOR_GAP,
@@ -23,6 +24,7 @@ const FINISH_GOALS = new Set<EvolutionGoal>([
   EvolutionGoal.MOTOR_SLALOM,
   EvolutionGoal.DODGEBALL,
   EvolutionGoal.MOTOR_LOOP,
+  EvolutionGoal.ROUGH_TERRAIN_TRAVERSE,
 ]);
 
 /** Fraction to grow gap width / challenge targets after each clear. */
@@ -90,7 +92,8 @@ export function escalateLimitsAfterGeneration(
     goal === EvolutionGoal.JUMP_LAND_UPRIGHT ||
     goal === EvolutionGoal.JUMP_HANG_TIME ||
     goal === EvolutionGoal.FLIGHT_HEIGHT ||
-    goal === EvolutionGoal.FLIGHT_LAND
+    goal === EvolutionGoal.FLIGHT_LAND ||
+    goal === EvolutionGoal.CHUTE_DESCENT
   ) {
     // Soft escalate on strong jump / flight height relative to prior tier baseline
     const jump = Math.max(
@@ -98,11 +101,20 @@ export function escalateLimitsAfterGeneration(
       best.airbornePeakHeight ?? 0,
       best.flightPeakClearance ?? 0
     );
-    const bar = 80 + tier * 18;
+    // Height bars were authored against legacy ~120px bodies; scale to world px.
+    const bar = (80 + tier * 18) * CREATURE_WORLD_SCALE;
     if (jump >= bar) {
+      const patch: Partial<SimulationConfig['arena']> = { progressiveTier: tier + 1 };
+      if (goal === EvolutionGoal.CHUTE_DESCENT) {
+        patch.towerHeightPx = clampTowerHeightPx(
+          Math.round((arena.towerHeightPx ?? 280) * LIMIT_GROWTH)
+        );
+      }
       return {
-        arenaPatch: { progressiveTier: tier + 1 },
-        reason: `Height ${jump.toFixed(0)}px beat ${bar}px — tier ${tier + 1}`,
+        arenaPatch: patch,
+        reason: goal === EvolutionGoal.CHUTE_DESCENT
+          ? `Soft landing — tower height → ${patch.towerHeightPx}px (tier ${tier + 1})`
+          : `Height ${jump.toFixed(1)}px beat ${bar.toFixed(1)}px — tier ${tier + 1}`,
       };
     }
   }
@@ -121,11 +133,11 @@ export function escalateLimitsAfterGeneration(
       goal === EvolutionGoal.FLIGHT_LEFT
         ? Math.max(best.flightDistanceLeft ?? 0, best.hopDistanceLeft ?? 0)
         : Math.max(best.flightDistance ?? 0, best.hopDistanceRight ?? 0);
-    const bar = 120 + tier * 40;
+    const bar = (120 + tier * 40) * CREATURE_WORLD_SCALE;
     if (dist >= bar) {
       return {
         arenaPatch: { progressiveTier: tier + 1 },
-        reason: `Air distance ${dist.toFixed(0)} beat ${bar} — tier ${tier + 1}`,
+        reason: `Air distance ${dist.toFixed(0)} beat ${bar.toFixed(0)} — tier ${tier + 1}`,
       };
     }
   }
@@ -175,6 +187,8 @@ export function escalateLimitsAfterGeneration(
     goal === EvolutionGoal.MOTOR_ICE
   ) {
     const dist = Math.max(0, best.currentX - best.startX);
+    // Locomotion / motor travel bars stay arena-scale (bodies still cover hundreds
+    // of world px per episode); only jump/flight height+air bars were legacy-sized.
     const bar = 600 + tier * 120;
     if (dist >= bar) {
       return {

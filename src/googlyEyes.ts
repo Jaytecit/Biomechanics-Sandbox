@@ -7,9 +7,11 @@
  */
 
 import { AppearancePrimitive } from './creaturePackages';
+import { CREATURE_WORLD_SCALE, creatureDrawPx } from './creatureScale';
 
 /** Visual scale for googly-eye domes, pupils, and spacing (cosmetic only). */
 export const GOOGLY_EYE_SIZE_SCALE = 3;
+const GOOGLY_WORLD_SCALE = GOOGLY_EYE_SIZE_SCALE * CREATURE_WORLD_SCALE;
 
 export type GooglyEyeSide = 'L' | 'R';
 
@@ -75,9 +77,9 @@ export function parseGooglyEyePairMetrics(
   const size = part.points[1];
   const spacing = part.points[2];
   const domeRadius =
-    Math.max(4 * GOOGLY_EYE_SIZE_SCALE, Math.abs(size?.x ?? anchorRadius * 0.52 * GOOGLY_EYE_SIZE_SCALE));
+    Math.max(4 * GOOGLY_WORLD_SCALE, Math.abs(size?.x ?? anchorRadius * 0.52 * GOOGLY_WORLD_SCALE));
   const pupilRadius = Math.max(
-    1.5 * GOOGLY_EYE_SIZE_SCALE,
+    1.5 * GOOGLY_WORLD_SCALE,
     Math.min(domeRadius * 0.42, Math.abs(size?.y ?? domeRadius * 0.36))
   );
   const halfSpacing = Math.max(
@@ -154,7 +156,7 @@ export function drawGooglyEyeDome(
   ctx.arc(centerX, centerY, domeRadius, 0, Math.PI * 2);
   ctx.fillStyle = '#ffffff';
   ctx.fill();
-  ctx.lineWidth = Math.max(1.2, domeRadius * 0.08);
+  ctx.lineWidth = Math.max(creatureDrawPx(1.2), domeRadius * 0.08);
   ctx.strokeStyle = stroke || '#94a3b8';
   ctx.stroke();
 
@@ -171,7 +173,7 @@ export function drawGooglyEyeDome(
   ctx.fillStyle = '#111827';
   ctx.fill();
 
-  const highlightR = Math.max(0.8, pupilRadius * 0.28);
+  const highlightR = Math.max(creatureDrawPx(0.8), pupilRadius * 0.28);
   ctx.beginPath();
   ctx.arc(
     pupilX - pupilRadius * 0.28,
@@ -191,9 +193,9 @@ export function createGooglyEyePairPrimitive(
   anchorNode: number,
   nodeRadius: number
 ): AppearancePrimitive {
-  const radius = Math.max(10, nodeRadius);
-  const domeRadius = Math.max(5 * GOOGLY_EYE_SIZE_SCALE, radius * 0.52 * GOOGLY_EYE_SIZE_SCALE);
-  const pupilRadius = Math.max(2 * GOOGLY_EYE_SIZE_SCALE, domeRadius * 0.36);
+  const radius = Math.max(creatureDrawPx(10), nodeRadius);
+  const domeRadius = Math.max(5 * GOOGLY_WORLD_SCALE, radius * 0.52 * GOOGLY_WORLD_SCALE);
+  const pupilRadius = Math.max(2 * GOOGLY_WORLD_SCALE, domeRadius * 0.36);
   const halfSpacing = domeRadius * 1.08;
   return {
     id: `googly-eyes-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,

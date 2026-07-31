@@ -15,7 +15,7 @@ import {
 } from '../src/physics';
 import { createBaseGenome } from '../src/neat';
 import { GAP_WIDTH, buildGoalArena } from '../src/arenas';
-import { terrainMaxX } from '../src/terrain';
+import { terrainMaxX, terrainMinX } from '../src/terrain';
 
 const config: SimulationConfig = {
   populationSize: 2,
@@ -62,8 +62,17 @@ console.log(
 
 // Endless extension (obstacle-free default)
 const before = terrainMaxX(obstacles);
-extendEndlessTerrain(obstacles, before + 200, config.arena.terrainSeed!, config.arena.difficulty, false);
-console.log(`after extend: maxX=${terrainMaxX(obstacles)} (was ${before}) hasTerrain=${hasTerrain(obstacles)}`);
+const beforeMin = terrainMinX(obstacles);
+extendEndlessTerrain(
+  obstacles,
+  { leftX: 100, rightX: before + 200 },
+  config.arena.terrainSeed!,
+  config.arena.difficulty,
+  false
+);
+console.log(
+  `after extend: minX=${terrainMinX(obstacles)} (was ${beforeMin}) maxX=${terrainMaxX(obstacles)} (was ${before}) hasTerrain=${hasTerrain(obstacles)}`
+);
 
 // Terrain selectable for Run Right
 const flatWithTerrain = generateObstacles(EvolutionGoal.LOCOMOTION_RIGHT, {
@@ -112,8 +121,16 @@ for (const template of templates) {
   );
 
   for (let t = 0; t < 600; t++) {
-    const furthest = Math.max(creature.currentX, hoop0?.x ?? 0);
-    extendEndlessTerrain(obstacles, furthest, config.arena.terrainSeed!, config.arena.difficulty, false);
+    const hoopX = hoop0?.x ?? creature.currentX;
+    const packLeftX = Math.min(creature.currentX, hoopX);
+    const packRightX = Math.max(creature.currentX, hoopX);
+    extendEndlessTerrain(
+      obstacles,
+      { leftX: packLeftX, rightX: packRightX },
+      config.arena.terrainSeed!,
+      config.arena.difficulty,
+      false
+    );
     updateWorldState([], obstacles, t, config);
     const privateObjs = creature.privateWorld ?? [];
     stepPrivateWorld(privateObjs, obstacles, config, t);

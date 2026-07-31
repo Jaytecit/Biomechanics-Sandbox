@@ -15,9 +15,19 @@ import {
 import {
   AppearanceRig,
   bodyFingerprint,
+  ensureLegacyScaleAndAppearanceMigration,
   loadCreaturePackages,
 } from './creaturePackages';
 import { sanitizeAppearanceRig } from './appearanceRig';
+import { ensureScaledBlueprint } from './creatureScale';
+import {
+  BuiltInRewardRecipe,
+  cloneBuiltInRewardRecipe,
+  DEFAULT_REWARD_RECIPE_FINGERPRINT,
+  isDefaultRewardRecipe,
+  normalizeBuiltInRewardRecipe,
+  rewardRecipeFingerprint,
+} from './builtInRewardCoeffs';
 import { getGoalInfo } from './goalCatalog';
 import { formatBestEver } from './formatGoal';
 import {
@@ -28,6 +38,36 @@ import {
 const STORAGE_KEY = 'biomech_finished_models_v1';
 /** Permanent all-time Best Ever per goal — survives resets, goal switches, and shelf deletes. */
 const BEST_EVER_STORAGE_KEY = 'biomech_goal_best_ever_v1';
+
+/**
+ * Best Ever storage key. Default recipe keeps the bare goal key so legacy
+ * ledger entries remain valid. Custom recipes use `goal::fingerprint`.
+ */
+export function bestEverStorageKey(
+  goal: EvolutionGoal,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
+): string {
+  if (
+    !fingerprint ||
+    fingerprint === DEFAULT_REWARD_RECIPE_FINGERPRINT
+  ) {
+    return goal;
+  }
+  return `${goal}::${fingerprint}`;
+}
+
+export function modelRewardFingerprint(model: {
+  rewardRecipeFingerprint?: string;
+  rewardRecipe?: BuiltInRewardRecipe;
+}): string {
+  if (
+    typeof model.rewardRecipeFingerprint === 'string' &&
+    model.rewardRecipeFingerprint.trim()
+  ) {
+    return model.rewardRecipeFingerprint;
+  }
+  return rewardRecipeFingerprint(model.rewardRecipe);
+}
 
 /**
  * Soft-body Verlet + private worlds get expensive with heterogeneous morphologies.
@@ -74,6 +114,13 @@ export interface FinishedModel {
    * Longer generations can inflate time-integrated scores; optional on legacy saves.
    */
   generationDurationSec?: number;
+  /**
+   * Built-in reward recipe used when this fitness was earned (Phase 22A).
+   * Omitted when defaults were used.
+   */
+  rewardRecipe?: BuiltInRewardRecipe;
+  /** Stable fingerprint of rewardRecipe (`default` when omitted). */
+  rewardRecipeFingerprint?: string;
   blueprint: CreatureBlueprint;
   genome: Genome;
   /** Present when the product was trained on Para Ramp (three specialist heads). */
@@ -224,8 +271,26 @@ export function buildDefaultFinishedModels(now = new Date().toISOString()): Fini
   }));
 }
 
-function normalizeLoadedModels(parsed: unknown[]): FinishedModel[] {
-  return parsed.filter(isValidFinishedModel).map(m => ({
+function normalizeLoadedModel(m: FinishedModel): {
+  model: FinishedModel;
+  changed: boolean;
+} {
+  const blueprint = ensureScaledBlueprint(m.blueprint);
+  const appearance = isValidAppearanceRig(m.appearance)
+    ? sanitizeAppearanceRig(m.appearance)
+    : resolveModelAppearance(blueprint, { name: m.name });
+  const scaled = blueprint !== m.blueprint;
+  const recipe =
+    m.rewardRecipe && typeof m.rewardRecipe === 'object'
+      ? normalizeBuiltInRewardRecipe(m.rewardRecipe)
+      : undefined;
+  const storedRecipe =
+    recipe && !isDefaultRewardRecipe(recipe) ? cloneBuiltInRewardRecipe(recipe) : undefined;
+  const fingerprint =
+    typeof m.rewardRecipeFingerprint === 'string' && m.rewardRecipeFingerprint.trim()
+      ? m.rewardRecipeFingerprint
+      : rewardRecipeFingerprint(storedRecipe);
+  const model: FinishedModel = {
     ...m,
     notes: typeof m.notes === 'string' ? m.notes : '',
     generationDurationSec:
@@ -234,14 +299,31 @@ function normalizeLoadedModels(parsed: unknown[]): FinishedModel[] {
       m.generationDurationSec > 0
         ? m.generationDurationSec
         : undefined,
-    traits: {
-      ...m.traits,
-      bodyTraits: Array.isArray(m.traits.bodyTraits) ? m.traits.bodyTraits : [],
-    },
-    appearance: isValidAppearanceRig(m.appearance)
-      ? sanitizeAppearanceRig(m.appearance)
-      : resolveModelAppearance(m.blueprint, { name: m.name }),
-  }));
+    rewardRecipe: storedRecipe,
+    rewardRecipeFingerprint: fingerprint,
+    blueprint,
+    appearance,
+    traits: scaled
+      ? deriveModelTraits(blueprint, m.genome, m.trainedGoal, m.paraPilot)
+      : {
+          ...m.traits,
+          bodyTraits: Array.isArray(m.traits.bodyTraits) ? m.traits.bodyTraits : [],
+        },
+  };
+  return { model, changed: scaled };
+}
+
+function normalizeLoadedModels(parsed: unknown[]): {
+  models: FinishedModel[];
+  changed: boolean;
+} {
+  let changed = false;
+  const models = parsed.filter(isValidFinishedModel).map(m => {
+    const normalized = normalizeLoadedModel(m);
+    if (normalized.changed) changed = true;
+    return normalized.model;
+  });
+  return { models, changed };
 }
 
 /**
@@ -255,7 +337,7 @@ function ensureShippedDefaults() {
     if (localStorage.getItem(SHIPPED_DEFAULTS_KEY) === 'done') return;
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    const existing = Array.isArray(parsed) ? normalizeLoadedModels(parsed) : [];
+    const existing = Array.isArray(parsed) ? normalizeLoadedModels(parsed).models : [];
     writeAll(existing.filter(m => !DEFAULT_FINISHED_MODEL_IDS.has(m.id)));
     localStorage.setItem(SHIPPED_DEFAULTS_KEY, 'done');
   } catch {
@@ -265,26 +347,31 @@ function ensureShippedDefaults() {
 
 export function loadFinishedModels(): FinishedModel[] {
   try {
+    ensureLegacyScaleAndAppearanceMigration();
     ensureShippedDefaults();
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return normalizeLoadedModels(parsed);
+    const { models, changed } = normalizeLoadedModels(parsed);
+    if (changed) writeAll(models);
+    return models;
   } catch {
     return [];
   }
 }
 
-/** Highest-fitness finished model trained on this goal, or null if none. */
+/** Highest-fitness finished model trained on this goal (+ recipe lane), or null. */
 export function findBestModelForGoal(
   goal: EvolutionGoal,
-  models: FinishedModel[] = loadFinishedModels()
+  models: FinishedModel[] = loadFinishedModels(),
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
 ): FinishedModel | null {
   let best: FinishedModel | null = null;
   for (const model of models) {
     if (model.trainedGoal !== goal) continue;
     if (!Number.isFinite(model.fitness)) continue;
+    if (modelRewardFingerprint(model) !== fingerprint) continue;
     if (!best || model.fitness > best.fitness) best = model;
   }
   return best;
@@ -375,9 +462,13 @@ function writeGoalBestEverMap(map: Record<string, GoalBestEverEntry>) {
   }
 }
 
-/** Current permanent Best Ever for a goal, or null if none recorded. */
-export function getPersistedGoalBestEver(goal: EvolutionGoal): GoalBestEverEntry | null {
-  const entry = loadGoalBestEverMap()[goal];
+/** Current permanent Best Ever for a goal (+ recipe lane), or null. */
+export function getPersistedGoalBestEver(
+  goal: EvolutionGoal,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
+): GoalBestEverEntry | null {
+  const key = bestEverStorageKey(goal, fingerprint);
+  const entry = loadGoalBestEverMap()[key];
   return entry ?? null;
 }
 
@@ -388,13 +479,15 @@ export function getPersistedGoalBestEver(goal: EvolutionGoal): GoalBestEverEntry
  */
 export function promoteGoalBestEver(
   goal: EvolutionGoal,
-  candidate: GoalBestEverCandidate
+  candidate: GoalBestEverCandidate,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
 ): GoalBestEverEntry | null {
   if (!Number.isFinite(candidate.fitness) || candidate.fitness <= 0) {
-    return getPersistedGoalBestEver(goal);
+    return getPersistedGoalBestEver(goal, fingerprint);
   }
   const map = loadGoalBestEverMap();
-  const existing = map[goal];
+  const key = bestEverStorageKey(goal, fingerprint);
+  const existing = map[key];
   const name =
     (typeof candidate.modelName === 'string' && candidate.modelName.trim()) ||
     'This run';
@@ -412,7 +505,7 @@ export function promoteGoalBestEver(
       generationDurationSec: dur,
       updatedAt: new Date().toISOString(),
     };
-    map[goal] = next;
+    map[key] = next;
     writeGoalBestEverMap(map);
     return next;
   }
@@ -435,7 +528,7 @@ export function promoteGoalBestEver(
   }
   if (changed) {
     refined.updatedAt = new Date().toISOString();
-    map[goal] = refined;
+    map[key] = refined;
     writeGoalBestEverMap(map);
     return refined;
   }
@@ -443,15 +536,18 @@ export function promoteGoalBestEver(
 }
 
 /**
- * Clear all Best Ever traces for one goal.
- * - Removes the persisted ledger entry for that goal.
- * - Zeroes shelf model fitness trained under that goal so the score cannot
+ * Clear Best Ever traces for one goal (+ recipe lane).
+ * - Removes the persisted ledger entry for that lane.
+ * - Zeroes shelf model fitness for matching goal+recipe so the score cannot
  *   immediately reappear from finished models.
  * Returns the updated finished-model list.
  */
-export function clearGoalBestEver(goal: EvolutionGoal): FinishedModel[] {
+export function clearGoalBestEver(
+  goal: EvolutionGoal,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
+): FinishedModel[] {
   const map = loadGoalBestEverMap();
-  delete map[goal];
+  delete map[bestEverStorageKey(goal, fingerprint)];
   writeGoalBestEverMap(map);
 
   const models = loadFinishedModels();
@@ -460,6 +556,7 @@ export function clearGoalBestEver(goal: EvolutionGoal): FinishedModel[] {
     if (model.trainedGoal !== goal || !Number.isFinite(model.fitness) || model.fitness <= 0) {
       return model;
     }
+    if (modelRewardFingerprint(model) !== fingerprint) return model;
     changed = true;
     return {
       ...model,
@@ -479,16 +576,18 @@ export function relabelGoalBestEverHolder(
   goal: EvolutionGoal,
   previousName: string,
   nextName: string,
-  fitness: number
+  fitness: number,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
 ): void {
   const trimmed = nextName.trim();
   if (!trimmed || !Number.isFinite(fitness)) return;
   const map = loadGoalBestEverMap();
-  const existing = map[goal];
+  const key = bestEverStorageKey(goal, fingerprint);
+  const existing = map[key];
   if (!existing) return;
   if (Math.abs(existing.fitness - fitness) > 1e-6) return;
   if (existing.modelName !== previousName && existing.modelName !== 'This run') return;
-  map[goal] = {
+  map[key] = {
     ...existing,
     modelName: trimmed,
     updatedAt: new Date().toISOString(),
@@ -505,11 +604,15 @@ export function seedGoalBestEverFromShelf(
 ): void {
   for (const model of models) {
     if (!Number.isFinite(model.fitness) || model.fitness <= 0) continue;
-    promoteGoalBestEver(model.trainedGoal, {
-      fitness: model.fitness,
-      modelName: model.name,
-      generationDurationSec: model.generationDurationSec,
-    });
+    promoteGoalBestEver(
+      model.trainedGoal,
+      {
+        fitness: model.fitness,
+        modelName: model.name,
+        generationDurationSec: model.generationDurationSec,
+      },
+      modelRewardFingerprint(model)
+    );
   }
 }
 
@@ -658,24 +761,26 @@ export function resolveGoalBestEver(
   goal: EvolutionGoal,
   session: GoalBestEverSession,
   models: FinishedModel[] = loadFinishedModels(),
-  persisted: GoalBestEverEntry | null = getPersistedGoalBestEver(goal)
+  persisted?: GoalBestEverEntry | null,
+  fingerprint: string = DEFAULT_REWARD_RECIPE_FINGERPRINT
 ): GoalBestEverRecord | null {
-  const holder = findBestModelForGoal(goal, models);
+  const ledger = persisted ?? getPersistedGoalBestEver(goal, fingerprint);
+  const holder = findBestModelForGoal(goal, models, fingerprint);
   const shelfFit = holder && Number.isFinite(holder.fitness) ? holder.fitness : 0;
   const sessionFit = Number.isFinite(session.fitness) ? session.fitness : 0;
-  const ledgerFit = persisted && Number.isFinite(persisted.fitness) ? persisted.fitness : 0;
+  const ledgerFit = ledger && Number.isFinite(ledger.fitness) ? ledger.fitness : 0;
   const best = Math.max(shelfFit, sessionFit, ledgerFit);
   if (best <= 0) return null;
   const scored = formatBestEver(goal, best);
 
   // Prefer the permanent ledger when it holds (or ties) the high score.
-  if (persisted && ledgerFit >= best - 1e-9 && ledgerFit > 0) {
+  if (ledger && ledgerFit >= best - 1e-9 && ledgerFit > 0) {
     return {
       scoreLabel: scored.value,
-      modelName: persisted.modelName,
+      modelName: ledger.modelName,
       fitness: best,
-      generationDurationSec: persisted.generationDurationSec,
-      durationLabel: formatGenLengthLabel(persisted.generationDurationSec),
+      generationDurationSec: ledger.generationDurationSec,
+      durationLabel: formatGenLengthLabel(ledger.generationDurationSec),
     };
   }
   if (holder && shelfFit >= sessionFit && shelfFit > 0) {
@@ -731,7 +836,13 @@ export function renameFinishedModel(id: string, name: string, notes?: string): F
   );
   writeAll(next);
   if (renamed && Number.isFinite(renamed.fitness) && renamed.fitness > 0) {
-    relabelGoalBestEverHolder(renamed.trainedGoal, renamed.name, trimmed, renamed.fitness);
+    relabelGoalBestEverHolder(
+      renamed.trainedGoal,
+      renamed.name,
+      trimmed,
+      renamed.fitness,
+      modelRewardFingerprint(renamed)
+    );
   }
   return next;
 }
@@ -748,6 +859,8 @@ export interface SaveProductInput {
   replaceId?: string;
   /** Body-part cosmetics from Studio (falls back to creature package lookup). */
   appearance?: AppearanceRig;
+  /** Built-in reward recipe active when fitness was earned (Phase 22A). */
+  rewardRecipe?: BuiltInRewardRecipe;
 }
 
 /** Freeze the current creature as a named finished product.
@@ -767,6 +880,11 @@ export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
     input.generationDurationSec > 0
       ? input.generationDurationSec
       : existing?.generationDurationSec;
+  const recipe =
+    input.rewardRecipe && !isDefaultRewardRecipe(input.rewardRecipe)
+      ? cloneBuiltInRewardRecipe(input.rewardRecipe)
+      : undefined;
+  const fingerprint = rewardRecipeFingerprint(recipe);
 
   const product: FinishedModel = {
     id: existing?.id ?? newId(),
@@ -778,6 +896,8 @@ export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
     fitness: creature.fitness,
     trainedGoal,
     generationDurationSec: duration,
+    rewardRecipe: recipe,
+    rewardRecipeFingerprint: fingerprint,
     blueprint: structuredClone(creature.blueprint),
     genome: structuredClone(creature.genome),
     paraPilot: creature.paraPilot ? structuredClone(creature.paraPilot) : undefined,
@@ -794,11 +914,15 @@ export function saveCreatureAsProduct(input: SaveProductInput): FinishedModel {
   };
 
   upsertFinishedModel(product);
-  promoteGoalBestEver(trainedGoal, {
-    fitness: product.fitness,
-    modelName: product.name,
-    generationDurationSec: product.generationDurationSec,
-  });
+  promoteGoalBestEver(
+    trainedGoal,
+    {
+      fitness: product.fitness,
+      modelName: product.name,
+      generationDurationSec: product.generationDurationSec,
+    },
+    fingerprint
+  );
   return product;
 }
 

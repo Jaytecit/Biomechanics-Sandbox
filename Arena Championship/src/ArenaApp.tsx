@@ -591,6 +591,7 @@ export function ArenaApp() {
                 bestEverDistance={0}
                 appearanceByCreatureId={appearanceByCreatureId}
                 environmentTheme="olympic"
+                uniformOpacity
               />
             )}
           </div>

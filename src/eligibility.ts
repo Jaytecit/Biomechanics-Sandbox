@@ -99,6 +99,9 @@ export function evaluateEligibility(
   ) {
     reasons.push('Para Ramp requires a paraglider and two powered wheels');
   }
+  if (context.goal === EvolutionGoal.CHUTE_DESCENT && !traits.hasParachute) {
+    reasons.push('Chute Descent requires at least one parachute');
+  }
   if (isJumpGoal(context.goal) && (traits.hasAero || traits.hasMotorWheel)) {
     reasons.push('jump goals require a muscle body without aero or motor drive');
   }

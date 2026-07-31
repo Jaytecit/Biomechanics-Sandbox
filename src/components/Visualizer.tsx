@@ -3,14 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useEffect, useState } from 'react';
-import { Creature, Obstacle, EvolutionGoal, WorldObject, isRigidBone, resolveLinkKind, findParallelHardLink, effectiveAeroArea } from '../types';
-import { GROUND_Y } from '../physics';
+import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
+import { Creature, Obstacle, EvolutionGoal, WorldObject, isRigidBone, resolveLinkKind, findParallelHardLink, effectiveAeroArea, muscleHasLever } from '../types';
+import { GROUND_Y, resolveMuscleAnchors } from '../physics';
+import { GAP_PRE_JUMP_ZONE_PX } from '../physicsConstants';
 import {
   parseProceduralTerrain,
   proceduralTerrainSurfaceY,
   TERRAIN_RENDER_STEP,
 } from '../terrain';
+import { simRulerIntervals } from '../simRulers';
+import {
+  CREATURE_VIEW_ZOOM_DEFAULT,
+  CREATURE_VIEW_ZOOM_MAX,
+  CREATURE_VIEW_ZOOM_MIN,
+  CREATURE_VIEW_ZOOM_STEP,
+  creatureDrawPx,
+} from '../creatureScale';
 import { drawChuteString } from '../aero';
 import { getGoalInfo } from '../goalCatalog';
 import { GoalInfoDialog } from './GoalInfoCard';
@@ -46,6 +55,7 @@ import {
   Settings,
   ChevronDown,
   ChevronRight,
+  Crosshair,
 } from 'lucide-react';
 
 /** Stable 0–1 hash for irregular backdrop placement (no regular lattice → less strobe). */
@@ -54,19 +64,53 @@ function backdropHash(n: number, salt = 0): number {
   return x - Math.floor(x);
 }
 
-/** Zoom +/− / scroll step: 5% of default. */
-const VISUALIZER_ZOOM_STEP = 0.05;
-/** Zoom range: 5% (zoomed out) … 100% (default / max zoom in). */
-const VISUALIZER_ZOOM_MIN = 0.05;
-const VISUALIZER_ZOOM_MAX = 1.0;
+/** Zoom +/− / scroll step (world scale units). */
+const VISUALIZER_ZOOM_STEP = CREATURE_VIEW_ZOOM_STEP;
+/** Zoom range: 100% (farthest out) … 1000% (default / max zoom in). */
+const VISUALIZER_ZOOM_MIN = CREATURE_VIEW_ZOOM_MIN;
+const VISUALIZER_ZOOM_MAX = CREATURE_VIEW_ZOOM_MAX;
+const VISUALIZER_ZOOM_DEFAULT = CREATURE_VIEW_ZOOM_DEFAULT;
+
+/**
+ * Camera Y that places world GROUND_Y this many canvas pixels above the bottom
+ * edge (zoom-aware). At 1000% (default max zoom) this keeps the ground line
+ * readable without a fake world-space bias.
+ */
+const GROUND_SCREEN_PAD_PX = 10;
+/** Keep the follow target at least this far below the top when airborne. */
+const FOLLOW_TOP_PAD_PX = 40;
+
+function cameraYForGroundNearBottom(canvasHeight: number, zoomLevel: number): number {
+  const h = Math.max(1, canvasHeight);
+  const z = Math.max(1e-6, zoomLevel);
+  return GROUND_Y - h / 2 - (h / 2 - GROUND_SCREEN_PAD_PX) / z;
+}
+
+/** Ground-anchored framing; lifts only when the follow target would clip the top. */
+function followCameraY(followY: number, canvasHeight: number, zoomLevel: number): number {
+  const groundCamY = cameraYForGroundNearBottom(canvasHeight, zoomLevel);
+  const h = Math.max(1, canvasHeight);
+  const z = Math.max(1e-6, zoomLevel);
+  const screenY = h / 2 + (followY - groundCamY - h / 2) * z;
+  if (screenY < FOLLOW_TOP_PAD_PX) {
+    return followY - h / 2 - (FOLLOW_TOP_PAD_PX - h / 2) / z;
+  }
+  return groundCamY;
+}
+
+/** Pixel movement before a press becomes a pan (vs creature pick). */
+const PAN_DRAG_THRESHOLD_PX = 5;
+
+/** Shorthand for legacy absolute draw sizes → world units. */
+const D = creatureDrawPx;
+
+function clampVisualizerZoom(z: number): number {
+  return Math.round(Math.max(VISUALIZER_ZOOM_MIN, Math.min(VISUALIZER_ZOOM_MAX, z)) * 100) / 100;
+}
 
 /** Tick spacing for the left-edge height ruler (world px), scaled by zoom. */
 function heightRulerIntervals(zoom: number): { minor: number; major: number } {
-  if (zoom >= 0.7) return { minor: 25, major: 50 };
-  if (zoom >= 0.35) return { minor: 50, major: 100 };
-  if (zoom >= 0.15) return { minor: 100, major: 200 };
-  if (zoom >= 0.08) return { minor: 200, major: 500 };
-  return { minor: 500, major: 1000 };
+  return simRulerIntervals(zoom);
 }
 
 /**
@@ -153,8 +197,13 @@ function drawMotionBackdrop(
   const viewMidY = bgTop + bgHeight * 0.5;
   const altitude = Math.max(0, groundY - viewMidY); // px above ground
 
+  const gradTop = Number.isFinite(bgTop) ? bgTop : 0;
+  const gradBottom = Number.isFinite(bgBottom) && Number.isFinite(groundY)
+    ? Math.min(bgBottom, groundY + 40)
+    : gradTop + 400;
+
   // --- Full-viewport sky (deepens with altitude) ---
-  const skyGrad = ctx.createLinearGradient(0, bgTop, 0, Math.min(bgBottom, groundY + 40));
+  const skyGrad = ctx.createLinearGradient(0, gradTop, 0, gradBottom);
   const t = Math.min(1, altitude / 6000);
   // Near ground: pale; high up: deeper indigo / dusk
   const topR = Math.round(238 - t * 100);
@@ -580,7 +629,7 @@ interface VisualizerProps {
   fillHeight?: boolean;
   /** Extra classes on the outer shell */
   className?: string;
-  /** Bottom-left run controls overlay */
+  /** Bottom chrome run controls (under the canvas) */
   simulationSpeed?: number;
   effectiveSimulationSpeed?: number;
   simStepsPerSecond?: number;
@@ -604,6 +653,14 @@ interface VisualizerProps {
   rewardBreakdown?: RewardBreakdown | null;
   /** Previous generation's leader breakdown (for up/down arrows) */
   rewardBaseline?: RewardBreakdown | null;
+  /** Active built-in reward recipe (SPEED / JUMP_SPEED pilot). */
+  rewardRecipe?: import('../builtInRewardCoeffs').BuiltInRewardRecipe;
+  /** Live-edit callback for pilot goal coefficients. */
+  onRewardRecipeChange?: (
+    recipe: import('../builtInRewardCoeffs').BuiltInRewardRecipe | undefined
+  ) => void;
+  /** When true, every creature renders at full opacity (arena heats). */
+  uniformOpacity?: boolean;
 }
 
 export const Visualizer: React.FC<VisualizerProps> = ({
@@ -637,30 +694,112 @@ export const Visualizer: React.FC<VisualizerProps> = ({
   environmentTheme = 'meadow',
   rewardBreakdown = null,
   rewardBaseline = null,
+  rewardRecipe,
+  onRewardRecipeChange,
+  uniformOpacity = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cameraXRef = useRef<number>(0);
-  const cameraYRef = useRef<number>(200);
+  const cameraYRef = useRef<number>(
+    cameraYForGroundNearBottom(450, VISUALIZER_ZOOM_DEFAULT)
+  );
+  const freeCameraRef = useRef(false);
+  /** When true, camera sticks to the user-clicked creature instead of the live leader. */
+  const pinFollowRef = useRef(false);
+  /** Snap camera to the follow target on the next frame (gen change / resume). */
+  const snapFollowRef = useRef(false);
+  const zoomRef = useRef(VISUALIZER_ZOOM_DEFAULT);
+  const creaturesLiveRef = useRef(creatures);
+  const selectedIdLiveRef = useRef(selectedCreatureId);
+  const panDragRef = useRef<{
+    pointerId: number;
+    mode: 'pending' | 'pan';
+    lastClientX: number;
+    lastClientY: number;
+    startClientX: number;
+    startClientY: number;
+    hitCreatureId: string | null;
+  } | null>(null);
 
   const [dimensions, setDimensions] = useState({ width: 800, height: 450 }); // keep width ≈ ARENA_SCREEN_WIDTH
-  const [zoom, setZoom] = useState(1.0);
+  const [zoom, setZoom] = useState(VISUALIZER_ZOOM_DEFAULT);
+  const [freeCamera, setFreeCamera] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [showMuscles, setShowMuscles] = useState(true);
   const [showGhostPack, setShowGhostPack] = useState(true);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
   const [simOverlayOpen, setSimOverlayOpen] = useState(true);
+  const simRunOverlayRef = useRef<HTMLDivElement | null>(null);
+  const [simControlsHeight, setSimControlsHeight] = useState(0);
+
+  zoomRef.current = zoom;
+  creaturesLiveRef.current = creatures;
+  selectedIdLiveRef.current = selectedCreatureId;
 
   const showRunOverlay = !!(onToggleRun && onManualBreed && onResetSimulation && onSetSimulationSpeed);
 
-  const handleZoomIn = () =>
-    setZoom(prev =>
-      Math.min(VISUALIZER_ZOOM_MAX, Math.round((prev + VISUALIZER_ZOOM_STEP) * 100) / 100)
-    );
-  const handleZoomOut = () =>
-    setZoom(prev =>
-      Math.max(VISUALIZER_ZOOM_MIN, Math.round((prev - VISUALIZER_ZOOM_STEP) * 100) / 100)
-    );
-  const handleResetZoom = () => setZoom(1.0);
+  const enableFreeCamera = () => {
+    if (freeCameraRef.current) return;
+    freeCameraRef.current = true;
+    setFreeCamera(true);
+  };
+
+  const resumeFollow = (snap = false) => {
+    freeCameraRef.current = false;
+    setFreeCamera(false);
+    if (snap) snapFollowRef.current = true;
+  };
+
+  // New generation: watch the live leader again (elite_0 until scores diverge).
+  useEffect(() => {
+    pinFollowRef.current = false;
+    resumeFollow(true);
+  }, [currentGen]);
+
+  // Keep Best Rewards height-cap in sync with the Simulation controls panel.
+  useLayoutEffect(() => {
+    const el = simRunOverlayRef.current;
+    if (!el || !showRunOverlay) {
+      setSimControlsHeight(0);
+      return;
+    }
+    const measure = () => {
+      setSimControlsHeight(Math.round(el.getBoundingClientRect().height));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [showRunOverlay, simOverlayOpen]);
+
+  /** Zoom while keeping the canvas-space anchor point fixed in world space. */
+  const applyZoomAt = (anchorX: number, anchorY: number, getNext: (current: number) => number) => {
+    const canvas = canvasRef.current;
+    const centerX = (canvas?.width ?? dimensions.width) / 2;
+    const centerY = (canvas?.height ?? dimensions.height) / 2;
+    setZoom(prev => {
+      const next = clampVisualizerZoom(getNext(prev));
+      if (next === prev) return prev;
+      cameraXRef.current += (anchorX - centerX) * (1 / prev - 1 / next);
+      cameraYRef.current += (anchorY - centerY) * (1 / prev - 1 / next);
+      return next;
+    });
+  };
+
+  const handleZoomIn = () => {
+    const canvas = canvasRef.current;
+    applyZoomAt((canvas?.width ?? dimensions.width) / 2, (canvas?.height ?? dimensions.height) / 2, z => z + VISUALIZER_ZOOM_STEP);
+  };
+  const handleZoomOut = () => {
+    const canvas = canvasRef.current;
+    applyZoomAt((canvas?.width ?? dimensions.width) / 2, (canvas?.height ?? dimensions.height) / 2, z => z - VISUALIZER_ZOOM_STEP);
+  };
+  const handleResetZoom = () => {
+    setZoom(VISUALIZER_ZOOM_DEFAULT);
+    pinFollowRef.current = false;
+    resumeFollow(true);
+  };
 
   useEffect(() => {
     initBodyPartAssets();
@@ -671,17 +810,18 @@ export const Visualizer: React.FC<VisualizerProps> = ({
     if (!canvas) return;
     const handleWheelNative = (e: WheelEvent) => {
       e.preventDefault();
-      const delta = e.deltaY;
-      setZoom(prev => {
-        const next = delta > 0 ? prev - VISUALIZER_ZOOM_STEP : prev + VISUALIZER_ZOOM_STEP;
-        return (
-          Math.round(Math.max(VISUALIZER_ZOOM_MIN, Math.min(VISUALIZER_ZOOM_MAX, next)) * 100) / 100
-        );
-      });
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / Math.max(1, rect.width);
+      const scaleY = canvas.height / Math.max(1, rect.height);
+      const anchorX = (e.clientX - rect.left) * scaleX;
+      const anchorY = (e.clientY - rect.top) * scaleY;
+      const direction = e.deltaY > 0 ? -1 : 1;
+      applyZoomAt(anchorX, anchorY, current => current + direction * VISUALIZER_ZOOM_STEP);
+      enableFreeCamera();
     };
     canvas.addEventListener('wheel', handleWheelNative, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheelNative);
-  }, []);
+  }, [dimensions.width, dimensions.height]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -729,28 +869,57 @@ export const Visualizer: React.FC<VisualizerProps> = ({
 
     let animationFrameId: number;
 
-    const trackedCreature =
-      creatures.find(c => c.id === selectedCreatureId) ||
-      creatures.reduce((prev, current) => (current.fitness > prev.fitness ? current : prev), creatures[0]);
+    const pickLiveLeader = (pack: Creature[]): Creature | undefined => {
+      if (pack.length === 0) return undefined;
+      return pack.reduce((best, current) =>
+        current.fitness > best.fitness ? current : best
+      );
+    };
 
     const visibleCreatures = showGhostPack
       ? creatures
-      : creatures.filter(c => c.id === (trackedCreature?.id ?? selectedCreatureId));
+      : creatures.filter(c => c.id === selectedCreatureId);
 
     const render = () => {
       const measurePerformance = isPerformanceDiagnosticsActive();
       const renderStartedAt = measurePerformance ? performance.now() : 0;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      const pack = creaturesLiveRef.current;
+      const liveLeader = pickLiveLeader(pack);
+      const selected = pack.find(c => c.id === selectedIdLiveRef.current) ?? null;
+      // Ghost pack: follow the live fitness leader (or a user-pinned click).
+      // Solo view: stay on the selected creature.
+      const trackedCreature =
+        !showGhostPack && selected
+          ? selected
+          : pinFollowRef.current && selected
+            ? selected
+            : liveLeader ?? selected ?? undefined;
+
       let targetCamX = 0;
-      let targetCamY = 200;
+      let targetCamY = cameraYForGroundNearBottom(dimensions.height, zoom);
       if (trackedCreature) {
-        targetCamX = trackedCreature.currentX - dimensions.width / 2;
-        targetCamY = trackedCreature.currentY - dimensions.height / 2;
+        const cx = Number.isFinite(trackedCreature.currentX) ? trackedCreature.currentX : 100;
+        const cy = Number.isFinite(trackedCreature.currentY) ? trackedCreature.currentY : GROUND_Y - 80;
+        targetCamX = cx - dimensions.width / 2;
+        targetCamY = followCameraY(cy, dimensions.height, zoom);
       }
 
-      cameraXRef.current += (targetCamX - cameraXRef.current) * 0.1;
-      cameraYRef.current += (targetCamY - cameraYRef.current) * 0.1;
+      if (!freeCameraRef.current) {
+        if (snapFollowRef.current) {
+          cameraXRef.current = targetCamX;
+          cameraYRef.current = targetCamY;
+          snapFollowRef.current = false;
+        } else {
+          cameraXRef.current += (targetCamX - cameraXRef.current) * 0.1;
+          cameraYRef.current += (targetCamY - cameraYRef.current) * 0.1;
+        }
+      }
+      if (!Number.isFinite(cameraXRef.current)) cameraXRef.current = 0;
+      if (!Number.isFinite(cameraYRef.current)) {
+        cameraYRef.current = cameraYForGroundNearBottom(dimensions.height, zoom);
+      }
       const camX = cameraXRef.current;
       const camY = cameraYRef.current;
 
@@ -901,16 +1070,18 @@ export const Visualizer: React.FC<VisualizerProps> = ({
       // Obstacles / modifiers
       for (const obs of obstacles) {
         if (obs.type === 'ice') {
+          // Draw the authored friction band so the visual patch matches where
+          // physics actually applies the low-friction zone.
           ctx.fillStyle = 'rgba(125, 211, 252, 0.55)';
           ctx.strokeStyle = '#38bdf8';
           ctx.lineWidth = 1.5;
           ctx.beginPath();
-          ctx.rect(obs.x, GROUND_Y - 6, obs.width, 6);
+          ctx.rect(obs.x, obs.y, obs.width, Math.max(4, obs.height));
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = '#0284c7';
           ctx.font = 'bold 9px ui-sans-serif, system-ui';
-          ctx.fillText('ICE', obs.x + 6, GROUND_Y - 10);
+          ctx.fillText('ICE', obs.x + 6, obs.y - 4);
         } else if (obs.type === 'box') {
           const isRock = obs.label === 'rock' || obs.label === 'boulder';
           const isPad =
@@ -951,7 +1122,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.fillStyle = 'rgba(255,255,255,0.18)';
           ctx.fillRect(obs.x, obs.y, obs.width, 3);
         } else if (obs.type === 'bar') {
-          const barLeft = obs.x - obs.width / 2;
+          // Clear Bar authors `x` as the bar center; Kick Goal ('GOAL') authors
+          // `x` as the mouth's left edge. Match each convention so the drawn
+          // crossbar aligns with the scoring geometry.
+          const barLeft = obs.label === 'GOAL' ? obs.x : obs.x - obs.width / 2;
           ctx.fillStyle = '#facc15';
           ctx.strokeStyle = '#ca8a04';
           ctx.lineWidth = 2;
@@ -976,8 +1150,44 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.closePath();
           ctx.fill();
           ctx.stroke();
+        } else if (obs.type === 'tower') {
+          const platformH = 12;
+          ctx.fillStyle = '#475569';
+          ctx.strokeStyle = '#334155';
+          ctx.lineWidth = 2;
+          ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+          ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+          // Platform deck drawn below the collision top (obs.y) so creatures
+          // visually stand on the platform instead of floating 12px above it.
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillRect(obs.x - 4, obs.y, obs.width + 8, platformH);
+          ctx.strokeStyle = '#64748b';
+          ctx.strokeRect(obs.x - 4, obs.y, obs.width + 8, platformH);
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = 'bold 10px ui-sans-serif, system-ui';
+          ctx.fillText(obs.label || 'TOWER', obs.x + 4, obs.y + obs.height * 0.45);
+          ctx.fillStyle = '#64748b';
+          ctx.font = '9px ui-sans-serif, system-ui';
+          ctx.fillText(`${Math.round(obs.height)}px`, obs.x + 4, obs.y + obs.height * 0.55);
         } else if (obs.type === 'pit') {
           const pitDepth = Math.max(1, obs.height);
+          // Clear Gap: show the 40px pre-lip jump incentive window.
+          if (goal === EvolutionGoal.MOTOR_GAP) {
+            const zoneW = GAP_PRE_JUMP_ZONE_PX;
+            const zoneX = obs.x - zoneW;
+            const zoneH = 56;
+            const zoneY = GROUND_Y - zoneH;
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.22)';
+            ctx.fillRect(zoneX, zoneY, zoneW, zoneH);
+            ctx.strokeStyle = '#d97706';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 4]);
+            ctx.strokeRect(zoneX, zoneY, zoneW, zoneH);
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#b45309';
+            ctx.font = 'bold 9px ui-sans-serif, system-ui';
+            ctx.fillText('JUMP', zoneX + 4, zoneY - 5);
+          }
           ctx.fillStyle = '#0f172a';
           ctx.fillRect(obs.x, obs.y, obs.width, pitDepth);
           ctx.fillStyle = 'rgba(248, 113, 113, 0.35)';
@@ -1081,6 +1291,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.font = 'bold 10px ui-sans-serif, system-ui';
           ctx.fillText('HOOP', obj.x - 16, obj.y - outer - 6);
         } else if (obj.type === 'ball') {
+          const angle = obj.angle ?? 0;
           const grad = ctx.createRadialGradient(obj.x - 4, obj.y - 4, 2, obj.x, obj.y, obj.radius);
           grad.addColorStop(0, '#fdba74');
           grad.addColorStop(1, '#ea580c');
@@ -1090,6 +1301,12 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.fill();
           ctx.strokeStyle = '#9a3412';
           ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.strokeStyle = '#78350f';
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(obj.x, obj.y);
+          ctx.lineTo(obj.x + Math.cos(angle) * obj.radius * 0.85, obj.y + Math.sin(angle) * obj.radius * 0.85);
           ctx.stroke();
         } else {
           ctx.fillStyle = '#92400e';
@@ -1160,9 +1377,11 @@ export const Visualizer: React.FC<VisualizerProps> = ({
       for (const creature of sortedCreatures) {
         const isSelected = creature.id === selectedCreatureId;
         const isLeader = creature.id === trackedCreature?.id;
-        let opacity = 0.15;
-        if (isSelected) opacity = 1.0;
-        else if (isLeader) opacity = 0.75;
+        let opacity = uniformOpacity ? 1.0 : 0.15;
+        if (!uniformOpacity) {
+          if (isSelected) opacity = 1.0;
+          else if (isLeader) opacity = 0.75;
+        }
 
         const creatureAppearance = appearanceByCreatureId?.[creature.id] ?? appearance;
 
@@ -1174,21 +1393,29 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           const nodeB = creature.nodes[muscle.nodeB];
           if (!nodeA || !nodeB) continue;
 
-          const dx = nodeB.x - nodeA.x;
-          const dy = nodeB.y - nodeA.y;
-          const len = Math.sqrt(dx * dx + dy * dy) || 1;
           const kind = resolveLinkKind(muscle);
+          const levered = kind === 'muscle' && muscleHasLever(muscle);
+          const anchors = levered
+            ? resolveMuscleAnchors(muscle, creature.muscles, creature.nodes)
+            : null;
+          const ax0 = anchors ? anchors.endA.x : nodeA.x;
+          const ay0 = anchors ? anchors.endA.y : nodeA.y;
+          const bx0 = anchors ? anchors.endB.x : nodeB.x;
+          const by0 = anchors ? anchors.endB.y : nodeB.y;
+          const dx = bx0 - ax0;
+          const dy = by0 - ay0;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
           // Offset soft stroke when paralleled with a hard link on the same pair
-          let drawAx = nodeA.x;
-          let drawAy = nodeA.y;
-          let drawBx = nodeB.x;
-          let drawBy = nodeB.y;
-          if (kind === 'muscle' && findParallelHardLink(muscle, creature.muscles)) {
+          let drawAx = ax0;
+          let drawAy = ay0;
+          let drawBx = bx0;
+          let drawBy = by0;
+          if (kind === 'muscle' && !levered && findParallelHardLink(muscle, creature.muscles)) {
             const ux = dx / len;
             const uy = dy / len;
-            const ox = -uy * 4;
-            const oy = ux * 4;
+            const ox = -uy * D(4);
+            const oy = ux * D(4);
             drawAx += ox;
             drawAy += oy;
             drawBx += ox;
@@ -1200,7 +1427,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             // Chute is a string: straight when limp, dome when inflated.
             drawChuteString(ctx, nodeA.x, nodeA.y, nodeB.x, nodeB.y, muscle, {
               opacity,
-              lineWidth: isSelected ? 3.2 : isLeader ? 2.6 : 2.1,
+              lineWidth: isSelected ? D(3.2) : isLeader ? D(2.6) : D(2.1),
               selected: isSelected,
             });
             continue;
@@ -1221,47 +1448,13 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.fillStyle = aero === 'wing' ? '#7dd3fc' : '#c4b5fd';
             ctx.fill();
             ctx.strokeStyle = aero === 'wing' ? '#0284c7' : '#7c3aed';
-            ctx.lineWidth = 1.25;
+            ctx.lineWidth = D(1.25);
             ctx.stroke();
             ctx.restore();
           }
 
-          if (kind === 'telescope') {
-            const thickBoost = ((muscle.thickness ?? 1) - 1) * 2.5;
-            const mid = 0.55;
-            const mx = drawAx + (drawBx - drawAx) * mid;
-            const my = drawAy + (drawBy - drawAy) * mid;
-            const ux = (drawBx - drawAx) / len;
-            const uy = (drawBy - drawAy) / len;
-            ctx.save();
-            ctx.lineCap = 'round';
-            ctx.strokeStyle = `rgba(15, 118, 110, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 8 : isLeader ? 6 : 4.5) + thickBoost;
-            ctx.beginPath();
-            ctx.moveTo(drawAx, drawAy);
-            ctx.lineTo(mx, my);
-            ctx.stroke();
-            ctx.strokeStyle = `rgba(94, 234, 212, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 4 : isLeader ? 2.75 : 2) + thickBoost * 0.45;
-            ctx.beginPath();
-            ctx.moveTo(drawAx, drawAy);
-            ctx.lineTo(mx, my);
-            ctx.stroke();
-            ctx.strokeStyle = `rgba(19, 78, 74, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 4.5 : isLeader ? 3.25 : 2.5) + thickBoost * 0.35;
-            ctx.beginPath();
-            ctx.moveTo(mx - ux * 3, my - uy * 3);
-            ctx.lineTo(drawBx, drawBy);
-            ctx.stroke();
-            ctx.strokeStyle = `rgba(153, 246, 228, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 2.25 : isLeader ? 1.75 : 1.25) + thickBoost * 0.2;
-            ctx.beginPath();
-            ctx.moveTo(mx, my);
-            ctx.lineTo(drawBx - ux * 2, drawBy - uy * 2);
-            ctx.stroke();
-            ctx.restore();
-          } else if (kind === 'piston') {
-            const thickBoost = ((muscle.thickness ?? 1) - 1) * 2.5;
+          if (kind === 'piston') {
+            const thickBoost = ((muscle.thickness ?? 1) - 1) * D(2.5);
             const mid = 0.55;
             const mx = drawAx + (drawBx - drawAx) * mid;
             const my = drawAy + (drawBy - drawAy) * mid;
@@ -1270,48 +1463,48 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.save();
             ctx.lineCap = 'round';
             ctx.strokeStyle = `rgba(67, 56, 202, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 8 : isLeader ? 6 : 4.5) + thickBoost;
+            ctx.lineWidth = (isSelected ? D(8) : isLeader ? D(6) : D(4.5)) + thickBoost;
             ctx.beginPath();
             ctx.moveTo(drawAx, drawAy);
             ctx.lineTo(mx, my);
             ctx.stroke();
             ctx.strokeStyle = `rgba(165, 180, 252, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 4 : isLeader ? 2.75 : 2) + thickBoost * 0.45;
+            ctx.lineWidth = (isSelected ? D(4) : isLeader ? D(2.75) : D(2)) + thickBoost * 0.45;
             ctx.beginPath();
             ctx.moveTo(drawAx, drawAy);
             ctx.lineTo(mx, my);
             ctx.stroke();
             ctx.strokeStyle = `rgba(49, 46, 129, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 4.5 : isLeader ? 3.25 : 2.5) + thickBoost * 0.35;
+            ctx.lineWidth = (isSelected ? D(4.5) : isLeader ? D(3.25) : D(2.5)) + thickBoost * 0.35;
             ctx.beginPath();
-            ctx.moveTo(mx - ux * 3, my - uy * 3);
+            ctx.moveTo(mx - ux * D(3), my - uy * D(3));
             ctx.lineTo(drawBx, drawBy);
             ctx.stroke();
             ctx.strokeStyle = `rgba(199, 210, 254, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 2.25 : isLeader ? 1.75 : 1.25) + thickBoost * 0.2;
+            ctx.lineWidth = (isSelected ? D(2.25) : isLeader ? D(1.75) : D(1.25)) + thickBoost * 0.2;
             ctx.beginPath();
             ctx.moveTo(mx, my);
-            ctx.lineTo(drawBx - ux * 2, drawBy - uy * 2);
+            ctx.lineTo(drawBx - ux * D(2), drawBy - uy * D(2));
             ctx.stroke();
             ctx.strokeStyle = `rgba(129, 140, 248, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 2.5 : isLeader ? 2 : 1.5) + thickBoost * 0.15;
+            ctx.lineWidth = (isSelected ? D(2.5) : isLeader ? D(2) : D(1.5)) + thickBoost * 0.15;
             ctx.beginPath();
-            ctx.moveTo(mx - ux * 2 - uy * 4, my - uy * 2 + ux * 4);
-            ctx.lineTo(mx - ux * 2 + uy * 4, my - uy * 2 - ux * 4);
+            ctx.moveTo(mx - ux * D(2) - uy * D(4), my - uy * D(2) + ux * D(4));
+            ctx.lineTo(mx - ux * D(2) + uy * D(4), my - uy * D(2) - ux * D(4));
             ctx.stroke();
             ctx.restore();
           } else if (isRigidBone(muscle)) {
-            const thickBoost = ((muscle.thickness ?? 1) - 1) * 2.5;
+            const thickBoost = ((muscle.thickness ?? 1) - 1) * D(2.5);
             ctx.save();
             ctx.lineCap = 'round';
             ctx.strokeStyle = `rgba(51, 65, 85, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 8 : isLeader ? 6 : 4.5) + thickBoost;
+            ctx.lineWidth = (isSelected ? D(8) : isLeader ? D(6) : D(4.5)) + thickBoost;
             ctx.beginPath();
             ctx.moveTo(drawAx, drawAy);
             ctx.lineTo(drawBx, drawBy);
             ctx.stroke();
             ctx.strokeStyle = `rgba(241, 245, 249, ${opacity})`;
-            ctx.lineWidth = (isSelected ? 4.5 : isLeader ? 3 : 2) + thickBoost * 0.5;
+            ctx.lineWidth = (isSelected ? D(4.5) : isLeader ? D(3) : D(2)) + thickBoost * 0.5;
             ctx.beginPath();
             ctx.moveTo(drawAx, drawAy);
             ctx.lineTo(drawBx, drawBy);
@@ -1324,16 +1517,16 @@ export const Visualizer: React.FC<VisualizerProps> = ({
               if (ratio < 0.9) muscleColor = `rgba(14, 116, 144, ${opacity})`;
               else if (ratio > 1.1) muscleColor = `rgba(194, 65, 12, ${opacity})`;
             }
-            const thickBoost = ((muscle.thickness ?? 1) - 1) * 3;
+            const thickBoost = ((muscle.thickness ?? 1) - 1) * D(3);
             ctx.strokeStyle = muscleColor;
-            ctx.lineWidth = (isSelected ? 6 : isLeader ? 4 : 2.5) + thickBoost;
+            ctx.lineWidth = (isSelected ? D(6) : isLeader ? D(4) : D(2.5)) + thickBoost;
             ctx.beginPath();
             ctx.moveTo(drawAx, drawAy);
             ctx.lineTo(drawBx, drawBy);
             ctx.stroke();
             if (isSelected) {
               ctx.strokeStyle = '#ffffff';
-              ctx.lineWidth = 1.5;
+              ctx.lineWidth = D(1.5);
               ctx.beginPath();
               ctx.moveTo(drawAx + (drawBx - drawAx) * 0.3, drawAy + (drawBy - drawAy) * 0.3);
               ctx.lineTo(drawBx - (drawBx - drawAx) * 0.3, drawBy - (drawBy - drawAy) * 0.3);
@@ -1350,7 +1543,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ctx.globalAlpha = opacity;
           if (isSelected) {
             ctx.shadowColor = node.color || '#3b82f6';
-            ctx.shadowBlur = 8;
+            ctx.shadowBlur = D(8);
           }
 
           const isSolidNode = solidIds.has(node.id);
@@ -1366,14 +1559,14 @@ export const Visualizer: React.FC<VisualizerProps> = ({
               : node.isMotorWheel
                 ? 'rgba(245, 158, 11, 0.95)'
                 : 'rgba(148, 163, 184, 0.9)';
-            ctx.lineWidth = isSelected ? 2.5 : node.isMotorWheel ? 2 : 1.5;
+            ctx.lineWidth = isSelected ? D(2.5) : node.isMotorWheel ? D(2) : D(1.5);
             ctx.stroke();
             ctx.beginPath();
-            ctx.arc(node.x, node.y, Math.max(2, node.radius * 0.3), 0, Math.PI * 2);
+            ctx.arc(node.x, node.y, Math.max(D(0.2), node.radius * 0.3), 0, Math.PI * 2);
             ctx.fillStyle = node.isMotorWheel ? '#f59e0b' : (node.color || '#64748b');
             ctx.fill();
             ctx.strokeStyle = 'rgba(226, 232, 240, 0.9)';
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = D(1.5);
             for (let s = 0; s < 3; s++) {
               const a = spin + (s * Math.PI * 2) / 3;
               ctx.beginPath();
@@ -1386,7 +1579,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             }
             if (node.isMotorWheel) {
               ctx.beginPath();
-              ctx.arc(node.x, node.y, Math.max(1.5, node.radius * 0.12), 0, Math.PI * 2);
+              ctx.arc(node.x, node.y, Math.max(D(0.15), node.radius * 0.12), 0, Math.PI * 2);
               ctx.fillStyle = '#0f172a';
               ctx.fill();
             }
@@ -1395,12 +1588,12 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.fillStyle = node.color || '#3b82f6';
             ctx.fillRect(node.x - s / 2, node.y - s / 2, s, s);
             ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(15, 23, 42, 0.85)';
-            ctx.lineWidth = isSelected ? 2 : 1.5;
+            ctx.lineWidth = isSelected ? D(2) : D(1.5);
             ctx.strokeRect(node.x - s / 2, node.y - s / 2, s, s);
             if (node.isGround && opacity > 0.5) {
               ctx.fillStyle = '#ffffff';
               ctx.beginPath();
-              ctx.arc(node.x, node.y + node.radius - 3, 3, 0, Math.PI * 2);
+              ctx.arc(node.x, node.y + node.radius - D(3), D(3), 0, Math.PI * 2);
               ctx.fill();
             }
           } else {
@@ -1409,12 +1602,12 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
             ctx.fill();
             ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(0,0,0,0.15)';
-            ctx.lineWidth = isSelected ? 2 : 1;
+            ctx.lineWidth = isSelected ? D(2) : D(1);
             ctx.stroke();
             if (node.isGround && opacity > 0.5) {
               ctx.fillStyle = '#ffffff';
               ctx.beginPath();
-              ctx.arc(node.x, node.y + node.radius - 3, 3, 0, Math.PI * 2);
+              ctx.arc(node.x, node.y + node.radius - D(3), D(3), 0, Math.PI * 2);
               ctx.fill();
             }
           }
@@ -1423,7 +1616,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.moveTo(node.x - node.radius * 0.85, node.y + node.radius * 0.55);
             ctx.lineTo(node.x + node.radius * 0.85, node.y + node.radius * 0.55);
             ctx.strokeStyle = 'rgba(5, 150, 105, 0.95)';
-            ctx.lineWidth = 2;
+            ctx.lineWidth = D(2);
             ctx.lineCap = 'round';
             ctx.stroke();
           }
@@ -1434,7 +1627,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             ctx.lineTo(node.x - s, node.y - s * 0.15);
             ctx.lineTo(node.x + s * 0.15, node.y - s * 0.15);
             ctx.strokeStyle = 'rgba(225, 29, 72, 0.95)';
-            ctx.lineWidth = 1.75;
+            ctx.lineWidth = D(1.75);
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             ctx.stroke();
@@ -1482,15 +1675,13 @@ export const Visualizer: React.FC<VisualizerProps> = ({
     return () => cancelAnimationFrame(animationFrameId);
   }, [creatures, selectedCreatureId, dimensions, obstacles, worldObjects, goal, bestEverDistance, zoom, showMuscles, showGhostPack, appearance, appearanceByCreatureId, environmentTheme]);
 
-  const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    event.preventDefault();
-
-    const { x: worldClickX, y: worldClickY } = screenToWorld(event.clientX, event.clientY);
+  const pickCreatureAt = (clientX: number, clientY: number): Creature | null => {
+    const { x: worldClickX, y: worldClickY } = screenToWorld(clientX, clientY);
     const pickFrom = showGhostPack
       ? creatures
       : creatures.filter(c => c.id === selectedCreatureId);
     let closestCreature: Creature | null = null;
-    let minDist = 45 / zoom;
+    let minDist = D(45) / zoomRef.current;
     for (const creature of pickFrom) {
       for (const node of creature.nodes) {
         const dist = Math.hypot(node.x - worldClickX, node.y - worldClickY);
@@ -1500,7 +1691,76 @@ export const Visualizer: React.FC<VisualizerProps> = ({
         }
       }
     }
-    if (closestCreature) onSelectCreature(closestCreature.id);
+    return closestCreature;
+  };
+
+  const clientDeltaToCanvas = (dx: number, dy: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: dx, y: dy };
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: dx * (canvas.width / Math.max(1, rect.width)),
+      y: dy * (canvas.height / Math.max(1, rect.height)),
+    };
+  };
+
+  const handleCanvasPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
+    event.preventDefault();
+    const hit = event.button === 0 ? pickCreatureAt(event.clientX, event.clientY) : null;
+    const startPan = event.button === 1 || event.button === 2 || !hit;
+    panDragRef.current = {
+      pointerId: event.pointerId,
+      mode: startPan ? 'pan' : 'pending',
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      hitCreatureId: hit?.id ?? null,
+    };
+    if (startPan) {
+      enableFreeCamera();
+      setIsPanning(true);
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    if (drag.mode === 'pending') {
+      const moved = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+      if (moved < PAN_DRAG_THRESHOLD_PX) return;
+      drag.mode = 'pan';
+      enableFreeCamera();
+      setIsPanning(true);
+    }
+
+    const { x: dx, y: dy } = clientDeltaToCanvas(
+      event.clientX - drag.lastClientX,
+      event.clientY - drag.lastClientY
+    );
+    drag.lastClientX = event.clientX;
+    drag.lastClientY = event.clientY;
+    const z = zoomRef.current || 1;
+    cameraXRef.current -= dx / z;
+    cameraYRef.current -= dy / z;
+  };
+
+  const endCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.mode === 'pending' && drag.hitCreatureId != null) {
+      pinFollowRef.current = true;
+      resumeFollow(true);
+      onSelectCreature(drag.hitCreatureId);
+    }
+    panDragRef.current = null;
+    setIsPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const renderGoalHeaderIcon = () => {
@@ -1591,25 +1851,34 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           ref={canvasRef}
           width={dimensions.width}
           height={dimensions.height}
-          onMouseDown={handleCanvasMouseDown}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={handleCanvasPointerMove}
+          onPointerUp={endCanvasPointer}
+          onPointerCancel={endCanvasPointer}
+          onContextMenu={e => e.preventDefault()}
+          className={`absolute inset-0 w-full h-full touch-none ${
+            isPanning ? 'cursor-grabbing' : freeCamera ? 'cursor-grab' : 'cursor-crosshair'
+          }`}
           id="simulation-canvas"
         />
 
-        {showRunOverlay && rewardBreakdown && (
-          <RewardsBreakdownPanel
-            breakdown={rewardBreakdown}
-            baseline={rewardBaseline}
-            generation={currentGen}
-          />
+        {!isRunning && creatures.length > 0 && (
+          <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-[1px] pointer-events-none" />
         )}
+      </div>
 
+      {/* Static chrome under the canvas — keeps controls off the ground line */}
+      <div
+        className="shrink-0 border-t border-slate-200 bg-slate-100/90 px-3 py-2 flex flex-nowrap items-stretch gap-2"
+        id="visualizer-bottom-chrome"
+      >
         {showRunOverlay && (
           <div
-            className="absolute bottom-4 left-4 z-10 select-none max-w-[min(100%-2rem,22rem)]"
+            ref={simRunOverlayRef}
+            className="select-none w-[min(100%,26rem)] shrink-0 self-stretch"
             id="sim-run-overlay"
           >
-            <div className="rounded-xl border border-white/40 bg-slate-900/55 backdrop-blur-md shadow-lg text-white overflow-hidden">
+            <div className="rounded-xl border border-slate-700/40 bg-slate-900 shadow-sm text-white overflow-hidden h-full flex flex-col">
               <button
                 type="button"
                 onClick={() => setSimOverlayOpen(v => !v)}
@@ -1691,11 +1960,32 @@ export const Visualizer: React.FC<VisualizerProps> = ({
                       </button>
                     ))}
                   </div>
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold text-white/75 tabular-nums">
-                    <span>Requested {simulationSpeed}x</span>
-                    <span>Effective {effectiveSimulationSpeed.toFixed(2)}x</span>
-                    <span>{simStepsPerSecond.toFixed(0)} steps/s</span>
-                    <span className={autoThrottleActive ? 'text-amber-200' : 'text-emerald-200'}>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-semibold text-white/75 tabular-nums whitespace-nowrap">
+                    <span className="inline-flex items-baseline gap-1 min-w-[7.25rem]">
+                      Requested
+                      <span className="inline-block min-w-[3.5ch] text-right">
+                        {simulationSpeed}
+                      </span>
+                      x
+                    </span>
+                    <span className="inline-flex items-baseline gap-1 min-w-[8.5rem]">
+                      Effective
+                      <span className="inline-block min-w-[4.5ch] text-right">
+                        {effectiveSimulationSpeed.toFixed(2)}
+                      </span>
+                      x
+                    </span>
+                    <span className="inline-flex items-baseline gap-1 min-w-[6.75rem]">
+                      <span className="inline-block min-w-[4ch] text-right">
+                        {Math.round(simStepsPerSecond)}
+                      </span>
+                      steps/s
+                    </span>
+                    <span
+                      className={`inline-block min-w-[8.25rem] ${
+                        autoThrottleActive ? 'text-amber-200' : 'text-emerald-200'
+                      }`}
+                    >
                       Auto-throttle {autoThrottleActive ? 'on' : 'off'}
                     </span>
                   </div>
@@ -1705,11 +1995,23 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           </div>
         )}
 
-        <div className="absolute bottom-4 right-4 flex items-center gap-2 z-10 select-none">
+        {showRunOverlay && rewardBreakdown && (
+          <RewardsBreakdownPanel
+            embedded
+            breakdown={rewardBreakdown}
+            baseline={rewardBaseline}
+            generation={currentGen}
+            heightCap={simControlsHeight > 0 ? simControlsHeight : undefined}
+            rewardRecipe={rewardRecipe}
+            onRewardRecipeChange={onRewardRecipeChange}
+          />
+        )}
+
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2 shrink-0 self-end">
           {!isRunning && creatures.length > 0 && (
             <div
               id="simulation-paused-status"
-              className="flex items-center px-2.5 py-1.5 bg-white/95 backdrop-blur-sm border border-slate-200/90 shadow-lg rounded-xl text-xs font-semibold text-slate-700"
+              className="flex items-center px-2.5 py-1.5 bg-white border border-slate-200 shadow-sm rounded-xl text-xs font-semibold text-slate-700"
             >
               Simulation Paused
             </div>
@@ -1718,10 +2020,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           <button
             type="button"
             onClick={() => setShowGhostPack(prev => !prev)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-white/90 backdrop-blur-sm border shadow-lg rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-white border shadow-sm rounded-xl text-xs font-bold transition-all cursor-pointer ${
               showGhostPack
-                ? 'border-slate-200/90 text-slate-700 hover:bg-slate-100'
-                : 'border-indigo-300 bg-indigo-50/95 text-indigo-800 hover:bg-indigo-100'
+                ? 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                : 'border-indigo-300 bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
             }`}
             title={
               showGhostPack
@@ -1737,10 +2039,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({
           <button
             type="button"
             onClick={() => setShowMuscles(prev => !prev)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-white/90 backdrop-blur-sm border shadow-lg rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-white border shadow-sm rounded-xl text-xs font-bold transition-all cursor-pointer ${
               showMuscles
-                ? 'border-slate-200/90 text-slate-700 hover:bg-slate-100'
-                : 'border-amber-300 bg-amber-50/95 text-amber-800 hover:bg-amber-100'
+                ? 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
             }`}
             title={showMuscles ? 'Hide skeleton (nodes, muscles, and bones)' : 'Show skeleton'}
             id="toggle-muscles-btn"
@@ -1750,23 +2052,33 @@ export const Visualizer: React.FC<VisualizerProps> = ({
             {showMuscles ? 'Muscles' : 'Muscles Off'}
           </button>
 
-          <div className="flex items-center gap-1 bg-white/90 backdrop-blur-sm border border-slate-200/90 shadow-lg rounded-xl p-1.5">
+          <div className="flex items-center gap-1 bg-white border border-slate-200 shadow-sm rounded-xl p-1.5">
             <button type="button" onClick={handleZoomOut} disabled={zoom <= VISUALIZER_ZOOM_MIN} className="p-1.5 hover:bg-slate-100 disabled:opacity-30 rounded-lg text-slate-700 cursor-pointer" title="Zoom Out">
               <ZoomOut className="w-4 h-4" />
             </button>
-            <button type="button" onClick={handleResetZoom} className="px-2.5 py-1 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 cursor-pointer flex items-center gap-1" title="Reset Zoom">
+            <button type="button" onClick={handleResetZoom} className="px-2.5 py-1 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 cursor-pointer flex items-center gap-1" title="Reset zoom and resume follow">
               <span>{Math.round(zoom * 100)}%</span>
-              {zoom !== 1.0 && <RotateCcw className="w-3 h-3 text-slate-400" />}
+              {(zoom !== VISUALIZER_ZOOM_DEFAULT || freeCamera) && <RotateCcw className="w-3 h-3 text-slate-400" />}
             </button>
             <button type="button" onClick={handleZoomIn} disabled={zoom >= VISUALIZER_ZOOM_MAX} className="p-1.5 hover:bg-slate-100 disabled:opacity-30 rounded-lg text-slate-700 cursor-pointer" title="Zoom In">
               <ZoomIn className="w-4 h-4" />
             </button>
+            {freeCamera && (
+              <button
+                type="button"
+                onClick={() => {
+                  pinFollowRef.current = false;
+                  resumeFollow(true);
+                }}
+                className="ml-0.5 flex items-center gap-1 border-l border-slate-200 pl-1.5 pr-1 py-1 rounded-lg text-[10px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer"
+                title="Resume following the live generation leader"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                Follow
+              </button>
+            )}
           </div>
         </div>
-
-        {!isRunning && creatures.length > 0 && (
-          <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-[1px] pointer-events-none" />
-        )}
       </div>
 
       <GoalInfoDialog goal={goal} open={goalDialogOpen} onClose={() => setGoalDialogOpen(false)} />

@@ -3,6 +3,7 @@ import { CREATURE_TEMPLATES } from '../src/templates';
 import {
   BUILTIN_PACKAGE_ID_PREFIX,
   CREATURE_REPOSITORY_KEY,
+  LEGACY_APPEARANCE_STRIP_MIGRATION_KEY,
   LEGACY_CREATURE_KEY,
   SKELETON_VISIBLE_MIGRATION_KEY,
   bodyFingerprint,
@@ -134,19 +135,48 @@ const customIdx = oldAppearancePackages.findIndex(item => !isBuiltinPackageId(it
 assert.ok(customIdx >= 0);
 oldAppearancePackages[customIdx].appearance = {
   version: 1,
-  hideSkeleton: true,
-  primitives: [],
+  hideSkeleton: false,
+  primitives: [{
+    id: 'skin-part-test',
+    kind: 'ellipse',
+    layer: 'front',
+    z: 1,
+    fill: '#000',
+    stroke: '#000',
+    opacity: 1,
+    points: [{ x: 0, y: 0 }],
+  }],
 };
 memory.set(CREATURE_REPOSITORY_KEY, JSON.stringify(oldAppearancePackages));
-memory.delete(SKELETON_VISIBLE_MIGRATION_KEY);
-const visibilityMigrated = loadCreaturePackages();
-const migratedCustom = visibilityMigrated.find(item => item.id === oldAppearancePackages[customIdx].id);
+memory.delete(LEGACY_APPEARANCE_STRIP_MIGRATION_KEY);
+const migratedOnce = loadCreaturePackages();
+const strippedCustom = migratedOnce.find(item => item.id === oldAppearancePackages[customIdx].id);
 assert.equal(
-  migratedCustom?.appearance?.hideSkeleton,
-  false,
-  'existing default-hidden appearances migrate to a visible collision skeleton once'
+  strippedCustom?.appearance,
+  undefined,
+  'legacy cosmetics are stripped once after the scale change'
 );
-assert.equal(memory.get(SKELETON_VISIBLE_MIGRATION_KEY), 'done');
+assert.equal(memory.get(LEGACY_APPEARANCE_STRIP_MIGRATION_KEY), 'done');
+oldAppearancePackages[customIdx].appearance = {
+  version: 1,
+  hideSkeleton: false,
+  primitives: [{
+    id: 'skin-part-kept',
+    kind: 'bodyPart',
+    assetId: 'monster:leg_blueA',
+    layer: 'front',
+    z: 1,
+    fill: '#000',
+    stroke: '#000',
+    opacity: 1,
+    points: [{ x: 0, y: 0 }],
+  }],
+};
+memory.set(CREATURE_REPOSITORY_KEY, JSON.stringify(oldAppearancePackages));
+const preserved = loadCreaturePackages();
+const keptCustom = preserved.find(item => item.id === oldAppearancePackages[customIdx].id);
+assert.ok(keptCustom?.appearance, 'future saves keep skin and body parts after migration');
+assert.equal(keptCustom?.appearance?.primitives.length, 1);
 
 const io = genomeIOForBlueprint(blueprint);
 const snapshot = {

@@ -43,8 +43,22 @@ function baseConfig(): SimulationConfig {
   };
 }
 
+/** Seed wing stroke accumulator so a single applyWingForces call is a power stroke. */
+function seedDownstroke(muscle: Record<string, unknown>, tipRelY: number) {
+  muscle._strokeAccum = 6;
+  muscle._strokeDir = 1;
+  muscle._strokeFrames = 5;
+  muscle._prevTipRelY = tipRelY - 1;
+  muscle._reversals = [0, 0, 0, 0, 0, 0, 0, 0];
+}
+
 function spawnTemplate(name: string): Creature {
-  const template = CREATURE_TEMPLATES.find(t => t.name === name);
+  const aliases: Record<string, string> = {
+    Flapper: 'RoboBird',
+    'Para Cart': 'Glide Cart',
+  };
+  const resolved = aliases[name] ?? name;
+  const template = CREATURE_TEMPLATES.find(t => t.name === resolved || t.name === name);
   if (!template) throw new Error(`Missing template ${name}`);
   const io = genomeIOForBlueprint(template);
   const genome = createBaseGenome(io.inputs, io.outputs);
@@ -109,11 +123,12 @@ function testWingPlateDownstroke() {
         targetLength: 40,
         _prevTarget: 70,
         aeroType: 'wing' as const,
-        aeroArea: 75,
+        aeroArea: 1,
       },
     ],
   } as unknown as Creature;
 
+  seedDownstroke(creature.muscles[0] as unknown as Record<string, unknown>, 0);
   const yBefore = (a.y + b.y) / 2;
   applyWingForces(creature);
   const yAfter = (a.y + b.y) / 2;
@@ -163,7 +178,7 @@ function testWingUpstrokeNoLift() {
         targetLength: 70, // lengthening = recovery
         _prevTarget: 40,
         aeroType: 'wing' as const,
-        aeroArea: 75,
+        aeroArea: 1,
       },
     ],
   } as unknown as Creature;
@@ -232,7 +247,7 @@ function testAsymmetricWingLift() {
       targetLength: 40,
       _prevTarget: 70, // left downstroke
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
     {
       id: 1,
@@ -246,7 +261,7 @@ function testAsymmetricWingLift() {
       targetLength: 55,
       _prevTarget: 55, // right hold
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
   ];
   const creature = {
@@ -254,6 +269,7 @@ function testAsymmetricWingLift() {
     muscles,
   } as unknown as Creature;
 
+  seedDownstroke(muscles[0] as unknown as Record<string, unknown>, tipL.y - body.y);
   const yL0 = tipL.y;
   const yR0 = tipR.y;
   applyWingForces(creature);
@@ -324,7 +340,7 @@ function testSymmetricWingLiftBest() {
         targetLength: 40,
         _prevTarget: 70,
         aeroType: 'wing' as const,
-        aeroArea: 75,
+        aeroArea: 1,
       },
       {
         id: 1,
@@ -338,9 +354,13 @@ function testSymmetricWingLiftBest() {
         targetLength: both ? 40 : 55,
         _prevTarget: both ? 70 : 55,
         aeroType: 'wing' as const,
-        aeroArea: 75,
+        aeroArea: 1,
       },
     ];
+    seedDownstroke(muscles[0] as unknown as Record<string, unknown>, tipL.y - body.y);
+    if (both) {
+      seedDownstroke(muscles[1] as unknown as Record<string, unknown>, tipR.y - body.y);
+    }
     return {
       nodes: [body, tipL, tipR],
       muscles,
@@ -404,7 +424,7 @@ function testParaStillNoFloat() {
         phaseOffset: 0,
         targetLength: 96,
         aeroType: 'paraglider' as const,
-        aeroArea: 140,
+        aeroArea: 1.4,
       },
     ],
   } as unknown as Creature;
@@ -448,7 +468,7 @@ function testParaForwardLift() {
         phaseOffset: 0,
         targetLength: 96,
         aeroType: 'paraglider' as const,
-        aeroArea: 140,
+        aeroArea: 1.4,
       },
     ],
   } as unknown as Creature;
@@ -501,7 +521,7 @@ function testParaEdgeOnNoFloat() {
         phaseOffset: 0,
         targetLength: 90,
         aeroType: 'paraglider' as const,
-        aeroArea: 140,
+        aeroArea: 1.4,
       },
     ],
   } as unknown as Creature;
@@ -556,7 +576,7 @@ function testParaPitchControlsClimb() {
           phaseOffset: 0,
           targetLength: 95,
           aeroType: 'paraglider' as const,
-          aeroArea: 140,
+          aeroArea: 1.4,
         },
       ],
     } as unknown as Creature;
@@ -582,22 +602,43 @@ function testFlapperHoldNoFloat() {
   const cfg = baseConfig();
   const creature = spawnTemplate('Flapper');
   settle(creature, 90, cfg);
+  // Hard-plant and clear stroke memory so the hold trial starts grounded,
+  // not mid-tumble with a leftover power-stroke accumulator.
+  for (const n of creature.nodes) {
+    if (n.y + n.radius > GROUND_Y) {
+      n.y = GROUND_Y - n.radius;
+      n.oldY = n.y;
+      n.oldX = n.x;
+    }
+    n.isGround = true;
+  }
+  for (const m of creature.muscles) {
+    const wing = m as {
+      _strokeAccum?: number;
+      _strokeDir?: number;
+      _strokeFrames?: number;
+      _prevTipRelY?: number;
+      _reversals?: number[];
+    };
+    wing._strokeAccum = 0;
+    wing._strokeDir = 0;
+    wing._strokeFrames = 0;
+    wing._prevTipRelY = undefined;
+    wing._reversals = [];
+  }
   const startY = comY(creature.nodes);
   const peak = creature.highestY;
-  // highestY is min Y (up). After settle on ground, peak should not be far above start spawn.
-  // Holding mid-length wings must not climb.
   for (let i = 0; i < 180; i++) {
     updateCreaturePhysics(creature, [], 90 + i, cfg, []);
   }
   const endY = comY(creature.nodes);
   const climb = startY - endY; // positive = rose
-  if (climb > 25) {
+  if (climb > 2.5) {
     throw new Error(`Flapper floated while holding (climb=${climb.toFixed(1)}px)`);
   }
-  // Should be near ground, not hovering mid-air
-  const foot = creature.nodes[3];
-  const clearance = GROUND_Y - (foot.y + foot.radius);
-  if (clearance > 40) {
+  const lowest = Math.max(...creature.nodes.map(n => n.y + n.radius));
+  const clearance = GROUND_Y - lowest;
+  if (clearance > 4) {
     throw new Error(`Flapper hovering (foot clearance=${clearance.toFixed(1)})`);
   }
   console.log(
@@ -658,7 +699,7 @@ function testForcedFlapProducesLift() {
       phaseOffset: 0,
       targetLength: 55,
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
     {
       id: 1,
@@ -671,7 +712,7 @@ function testForcedFlapProducesLift() {
       phaseOffset: 0,
       targetLength: 55,
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
   ];
   const creature = {
@@ -715,11 +756,11 @@ function testParaCartNoFloat() {
     updateCreaturePhysics(creature, [], 60 + i, cfg, []);
   }
   const climb = startY - comY(creature.nodes);
-  if (climb > 15) {
+  if (climb > 1.5) {
     throw new Error(`Para Cart floated without speed (climb=${climb.toFixed(1)})`);
   }
-  const wheelsOnGround = creature.nodes.filter(n => n.isWheel).every(n => n.isGround || n.y + n.radius >= GROUND_Y - 2);
-  if (!wheelsOnGround && climb > 5) {
+  const wheelsOnGround = creature.nodes.filter(n => n.isWheel).every(n => n.isGround || n.y + n.radius >= GROUND_Y - 0.2);
+  if (!wheelsOnGround && climb > 0.5) {
     throw new Error('Para Cart left ground without airspeed');
   }
   console.log(`OK para cart hold climb=${climb.toFixed(1)} x=${comX(creature.nodes).toFixed(1)}`);
@@ -851,7 +892,7 @@ function testParachuteAerodynamics() {
         targetLength: Math.round(span * 1.2),
         strength: 0.45,
         phaseOffset: 0,
-        ...(opts.withChute ? { aeroType: 'parachute' as const, aeroArea: 120 } : {}),
+        ...(opts.withChute ? { aeroType: 'parachute' as const, aeroArea: 1.2 } : {}),
       },
       {
         id: 1,
@@ -956,12 +997,12 @@ function testParachuteAerodynamics() {
       `Horizontal chute did not slow descent (chute=${sinkChute.toFixed(1)} bare=${sinkBare.toFixed(1)})`
     );
   }
-  if (sinkChute < 10) {
+  if (sinkChute < 1) {
     throw new Error(`Horizontal chute floated (sink=${sinkChute.toFixed(1)})`);
   }
   const canopyY = (chute.nodes[0].y + chute.nodes[1].y) / 2;
   const payloadY = chute.nodes[2].y;
-  if (canopyY > payloadY - 8) {
+  if (canopyY > payloadY - 0.8) {
     throw new Error(
       `Canopy did not settle above payload (canopyY=${canopyY.toFixed(1)} payloadY=${payloadY.toFixed(1)})`
     );

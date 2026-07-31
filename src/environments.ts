@@ -5,7 +5,7 @@ import { AGENT_SPAWN_X, GROUND_Y } from './physicsConstants';
 
 export const ENVIRONMENT_SCHEMA = 1;
 export const ENVIRONMENT_STORAGE_KEY = 'biomech_environment_packages_v1';
-export type EnvironmentTheme = 'meadow' | 'desert' | 'alpine' | 'night';
+export type EnvironmentTheme = 'meadow' | 'desert' | 'alpine' | 'night' | 'olympic';
 export interface EnvironmentPackage {
   schemaVersion: 1;
   id: string;
@@ -73,6 +73,16 @@ export function validateEnvironment(environment: EnvironmentPackage): string[] {
     if (![obstacle.x, obstacle.y, obstacle.width, obstacle.height].every(Number.isFinite)) {
       errors.push(`Object ${index + 1} has non-finite geometry`);
     }
+    if (obstacle.type === 'terrain') {
+      const x2 = obstacle.x2 ?? obstacle.x + obstacle.width;
+      const y2 = obstacle.y2 ?? obstacle.y;
+      if (![x2, y2].every(Number.isFinite)) {
+        errors.push(`Object ${index + 1} has non-finite geometry`);
+      } else if (Math.hypot(x2 - obstacle.x, y2 - obstacle.y) <= 0) {
+        errors.push(`Object ${index + 1} has zero/inverted size`);
+      }
+      continue;
+    }
     if (obstacle.width <= 0 || obstacle.height < 0) errors.push(`Object ${index + 1} has zero/inverted size`);
   }
   const solids = environment.obstacles.filter(o => o.type === 'box' || o.type === 'stair' || o.type === 'ramp');
@@ -122,6 +132,15 @@ export function saveEnvironment(environment: EnvironmentPackage): { ok: boolean;
 }
 export function exportEnvironment(environment: EnvironmentPackage): string {
   return JSON.stringify(environment, null, 2);
+}
+export function deleteEnvironment(id: string): boolean {
+  const all = loadEnvironments().filter(item => item.id !== id);
+  try {
+    storage()?.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
+  }
 }
 export function importEnvironment(raw: string): { ok: boolean; value?: EnvironmentPackage; error?: string } {
   try {

@@ -8,17 +8,30 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { CreatureBlueprint, DEFAULT_AERO_AREA, isHardLengthConstraint, resolveLinkKind } from '../types';
+import {
+  CreatureBlueprint,
+  DEFAULT_AERO_AREA,
+  LEVER_SLOT_T,
+  isHardLengthConstraint,
+  isRigidBone,
+  isValidLeverSlot,
+  resolveLinkKind,
+} from '../types';
 import { drawChuteString } from '../aero';
 import { AppearanceRig } from '../creaturePackages';
 import {
   captureSolidRestOffsets,
-  isLinkWhollyInsideSolid,
   normalizeSolidSegments,
-  projectSolidBodiesOnMap,
-  solidMembership,
   solidNodeIdSet,
 } from '../solidSegments';
+import {
+  PreviewBody,
+  PreviewEndWeight,
+  PreviewLink,
+  leverEndWeights,
+  nodeEndWeights,
+  solvePreviewPose,
+} from '../rangePreviewSolver';
 
 type PreviewNode = {
   id: number;
@@ -47,7 +60,7 @@ type PreviewMuscle = {
 };
 
 const PERIOD = 5.5;
-const RELAX_ITERS = 6;
+const PREVIEW_GROUND_Y = 0;
 
 function blueprintToPreview(blueprint: CreatureBlueprint): {
   nodes: PreviewNode[];
@@ -83,6 +96,68 @@ function blueprintToPreview(blueprint: CreatureBlueprint): {
   return { nodes, muscles };
 }
 
+/** Solver topology for a blueprint (lever ends ride their host bone). */
+function blueprintToPreviewBody(blueprint: CreatureBlueprint): PreviewBody {
+  const rest = new Map<number, { x: number; y: number; radius: number }>();
+  const masses = new Map<number, number>();
+  blueprint.nodes.forEach((n, i) => {
+    const rel = blueprint.relativePositions[i] ?? { x: 0, y: 0 };
+    rest.set(i, { x: rel.x, y: rel.y, radius: n.radius });
+    masses.set(i, n.mass ?? 1);
+  });
+
+  const endWeights = (
+    m: CreatureBlueprint['muscles'][number],
+    end: 'A' | 'B'
+  ): PreviewEndWeight[] | null => {
+    const leverBone = end === 'A' ? m.leverBoneA : m.leverBoneB;
+    const leverSlot = end === 'A' ? m.leverSlotA : m.leverSlotB;
+    if (leverBone !== undefined && isValidLeverSlot(leverSlot)) {
+      const bone = blueprint.muscles[leverBone];
+      if (bone && isRigidBone(bone) && rest.has(bone.nodeA) && rest.has(bone.nodeB)) {
+        return leverEndWeights(bone, LEVER_SLOT_T[leverSlot]);
+      }
+    }
+    const nodeId = end === 'A' ? m.nodeA : m.nodeB;
+    return rest.has(nodeId) ? nodeEndWeights(nodeId) : null;
+  };
+
+  const links: PreviewLink[] = [];
+  blueprint.muscles.forEach((m, i) => {
+    const endA = endWeights(m, 'A');
+    const endB = endWeights(m, 'B');
+    if (!endA || !endB) return;
+    const kind = resolveLinkKind(m);
+    links.push({
+      id: i,
+      nodeA: m.nodeA,
+      nodeB: m.nodeB,
+      endA,
+      endB,
+      isBone: kind === 'bone',
+      isHard: isHardLengthConstraint(m),
+      originalLength: m.originalLength,
+      minLength: m.minLength,
+      maxLength: m.maxLength,
+      strength: m.strength,
+      phaseOffset: m.phaseOffset ?? 0,
+    });
+  });
+
+  const solids = normalizeSolidSegments(blueprint.solidSegments);
+  const positions = new Map(
+    [...rest.entries()].map(([id, r]) => [id, { x: r.x, y: r.y }])
+  );
+  return {
+    rest,
+    masses,
+    links,
+    solids,
+    solidRest: captureSolidRestOffsets(solids, positions, masses),
+    groundY: PREVIEW_GROUND_Y,
+  };
+}
+
 interface RangePreviewVisualizerProps {
   blueprint: CreatureBlueprint | null;
   appearance?: AppearanceRig;
@@ -99,9 +174,9 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
   const [dimensions, setDimensions] = useState({ width: 480, height: 360 });
   const nodesRef = useRef<PreviewNode[]>([]);
   const musclesRef = useRef<PreviewMuscle[]>([]);
-  const solidsRef = useRef<ReturnType<typeof normalizeSolidSegments>>([]);
-  const solidRestRef = useRef<Map<string, { x: number; y: number }[]>>(new Map());
+  const previewBodyRef = useRef<PreviewBody | null>(null);
   const rangeTimeRef = useRef(0);
+  const fixedScaleRef = useRef<{ scale: number; cx: number; cy: number } | null>(null);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -124,19 +199,37 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
     if (!blueprint) {
       nodesRef.current = [];
       musclesRef.current = [];
-      solidsRef.current = [];
-      solidRestRef.current.clear();
+      previewBodyRef.current = null;
       return;
     }
     const { nodes, muscles } = blueprintToPreview(blueprint);
     nodesRef.current = nodes;
     musclesRef.current = muscles;
-    const solids = normalizeSolidSegments(blueprint.solidSegments);
-    solidsRef.current = solids;
-    const positions = new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }]));
-    const masses = new Map(nodes.map(n => [n.id, 1]));
-    solidRestRef.current = captureSolidRestOffsets(solids, positions, masses);
+    const body = blueprintToPreviewBody(blueprint);
+    previewBodyRef.current = body;
     rangeTimeRef.current = 0;
+
+    // Fixed camera from min/max muscle travel so the model does not appear to resize.
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const cycleT of [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]) {
+      const pos = solvePreviewPose(body, cycleT);
+      for (const n of nodes) {
+        const p = pos.get(n.id) ?? { x: n.x, y: n.y };
+        minX = Math.min(minX, p.x - n.radius);
+        maxX = Math.max(maxX, p.x + n.radius);
+        minY = Math.min(minY, p.y - n.radius);
+        maxY = Math.max(maxY, p.y + n.radius);
+      }
+    }
+    fixedScaleRef.current = {
+      scale: Math.min(480 / Math.max(40, maxX - minX), 360 / Math.max(40, maxY - minY)) * 0.82,
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+    };
+
     setTick(t => t + 1);
   }, [blueprint]);
 
@@ -145,63 +238,14 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
     let rafId = 0;
     const step = () => {
       rangeTimeRef.current += 1 / 60;
-      const t = rangeTimeRef.current;
-      const muscleList = musclesRef.current;
-
-      const pos = new Map<number, { x: number; y: number }>();
-      for (const n of nodesRef.current) {
-        pos.set(n.id, { x: n.x, y: n.y });
+      const body = previewBodyRef.current;
+      if (body) {
+        const pos = solvePreviewPose(body, rangeTimeRef.current / PERIOD);
+        nodesRef.current = nodesRef.current.map(n => {
+          const p = pos.get(n.id);
+          return p ? { ...n, x: p.x, y: p.y } : n;
+        });
       }
-
-      for (let iter = 0; iter < RELAX_ITERS; iter++) {
-        const membership = solidMembership(solidsRef.current);
-        for (const m of muscleList) {
-          if (isLinkWhollyInsideSolid(m.nodeA, m.nodeB, membership)) continue;
-          const a = pos.get(m.nodeA);
-          const b = pos.get(m.nodeB);
-          if (!a || !b) continue;
-          const kind = resolveLinkKind(m);
-          const isFixedBone = kind === 'bone';
-          const phase = (m.phaseOffset || 0) * Math.PI * 2;
-          const wave = (Math.sin((t / PERIOD) * Math.PI * 2 + phase) + 1) / 2;
-          const target = isFixedBone
-            ? m.originalLength
-            : m.minLength + wave * (m.maxLength - m.minLength);
-          const strength = isHardLengthConstraint(m)
-            ? 1.0
-            : Math.min(1, Math.max(0.35, m.strength));
-
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.hypot(dx, dy) || 1;
-          const diff = ((dist - target) / dist) * 0.5 * strength;
-          const ox = dx * diff;
-          const oy = dy * diff;
-          a.x += ox;
-          a.y += oy;
-          b.x -= ox;
-          b.y -= oy;
-        }
-        if (solidsRef.current.length > 0) {
-          const masses = new Map<number, number>(nodesRef.current.map(n => [n.id, 1]));
-          const oldMap = new Map<number, { oldX: number; oldY: number }>(
-            [...pos.entries()].map(([id, p]) => [id, { oldX: p.x, oldY: p.y }])
-          );
-          projectSolidBodiesOnMap(
-            pos,
-            oldMap,
-            masses,
-            solidsRef.current,
-            solidRestRef.current,
-            { preserveVelocity: false }
-          );
-        }
-      }
-
-      nodesRef.current = nodesRef.current.map(n => {
-        const p = pos.get(n.id);
-        return p ? { ...n, x: p.x, y: p.y } : n;
-      });
 
       setTick(v => v + 1);
       rafId = requestAnimationFrame(step);
@@ -265,13 +309,31 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
     const spanX = Math.max(40, maxX - minX);
     const spanY = Math.max(40, maxY - minY);
     const pad = 36;
-    const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
+    const fixed = fixedScaleRef.current;
+    const scale = fixed?.scale ?? Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
+    const cx = fixed?.cx ?? (minX + maxX) / 2;
+    const cy = fixed?.cy ?? (minY + maxY) / 2;
     const toScreen = (x: number, y: number) => ({
       x: width / 2 + (x - cx) * scale,
       y: height / 2 + (y - cy) * scale,
     });
+    const meanNodeR = Math.max(
+      2,
+      (nodes.reduce((sum, n) => sum + n.radius, 0) / nodes.length) * scale * 0.85
+    );
+    const sw = (factor: number) => Math.max(0.45, meanNodeR * factor);
+
+    // Ground reference line
+    const g0 = toScreen(minX - 20, PREVIEW_GROUND_Y);
+    const g1 = toScreen(maxX + 20, PREVIEW_GROUND_Y);
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(g0.x, g0.y);
+    ctx.lineTo(g1.x, g1.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
     const hideSkeleton = appearance?.hideSkeleton === true;
     const nodeById = new Map<number, PreviewNode>(nodes.map(n => [n.id, n]));
@@ -282,10 +344,9 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
       if (!nodeA || !nodeB) continue;
       const a = toScreen(nodeA.x, nodeA.y);
       const b = toScreen(nodeB.x, nodeB.y);
-      const thickBoost = ((muscle.thickness ?? 1) - 1) * 3;
+      const thickBoost = ((muscle.thickness ?? 1) - 1) * sw(0.35);
       const kind = resolveLinkKind(muscle);
       const isBone = kind === 'bone';
-      const isTel = kind === 'telescope';
       const isPist = kind === 'piston';
 
       ctx.save();
@@ -293,7 +354,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
       if (aero === 'parachute') {
         drawChuteString(ctx, a.x, a.y, b.x, b.y, muscle, {
           opacity: 1,
-          lineWidth: 2.4,
+          lineWidth: sw(0.12),
           selected: false,
           previewInflate: 0,
         });
@@ -307,7 +368,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
         const px = -dy / len;
         const py = dx / len;
         const half =
-          Math.sqrt(Math.max(8, muscle.aeroArea ?? DEFAULT_AERO_AREA)) *
+          Math.sqrt(Math.max(1, muscle.aeroArea ?? DEFAULT_AERO_AREA)) *
           (aero === 'paraglider' ? 0.55 : 0.4) *
           Math.min(1.2, scale / 1.2);
         ctx.beginPath();
@@ -321,11 +382,11 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
         ctx.fill();
         ctx.strokeStyle =
           aero === 'wing' ? 'rgba(14, 165, 233, 0.7)' : 'rgba(124, 58, 237, 0.75)';
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = sw(0.05);
         ctx.stroke();
       }
 
-      if (isTel || isPist) {
+      if (isPist) {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const len = Math.hypot(dx, dy) || 1;
@@ -335,48 +396,48 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
         const ux = dx / len;
         const uy = dy / len;
         ctx.lineCap = 'round';
-        ctx.strokeStyle = isPist ? '#4338ca' : '#0f766e';
-        ctx.lineWidth = 8 + thickBoost;
+        ctx.strokeStyle = '#4338ca';
+        ctx.lineWidth = sw(0.35) + thickBoost;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(mx, my);
         ctx.stroke();
-        ctx.strokeStyle = isPist ? '#a5b4fc' : '#5eead4';
-        ctx.lineWidth = 3.5 + thickBoost * 0.5;
+        ctx.strokeStyle = '#a5b4fc';
+        ctx.lineWidth = sw(0.15) + thickBoost * 0.5;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(mx, my);
         ctx.stroke();
-        ctx.strokeStyle = isPist ? '#312e81' : '#134e4a';
-        ctx.lineWidth = 3.5 + thickBoost * 0.4;
+        ctx.strokeStyle = '#312e81';
+        ctx.lineWidth = sw(0.15) + thickBoost * 0.4;
         ctx.beginPath();
-        ctx.moveTo(mx - ux * 4, my - uy * 4);
+        ctx.moveTo(mx - ux * sw(0.18), my - uy * sw(0.18));
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
-        ctx.strokeStyle = isPist ? '#c7d2fe' : '#99f6e4';
-        ctx.lineWidth = 1.75 + thickBoost * 0.25;
+        ctx.strokeStyle = '#c7d2fe';
+        ctx.lineWidth = sw(0.08) + thickBoost * 0.25;
         ctx.beginPath();
         ctx.moveTo(mx, my);
-        ctx.lineTo(b.x - ux * 2, b.y - uy * 2);
+        ctx.lineTo(b.x - ux * sw(0.09), b.y - uy * sw(0.09));
         ctx.stroke();
         if (isPist) {
           ctx.strokeStyle = '#818cf8';
-          ctx.lineWidth = 2 + thickBoost * 0.15;
+          ctx.lineWidth = sw(0.09) + thickBoost * 0.15;
           ctx.beginPath();
-          ctx.moveTo(mx - ux * 2 - uy * 4, my - uy * 2 + ux * 4);
-          ctx.lineTo(mx - ux * 2 + uy * 4, my - uy * 2 - ux * 4);
+          ctx.moveTo(mx - ux * sw(0.09) - uy * sw(0.18), my - uy * sw(0.09) + ux * sw(0.18));
+          ctx.lineTo(mx - ux * sw(0.09) + uy * sw(0.18), my - uy * sw(0.09) - ux * sw(0.18));
           ctx.stroke();
         }
       } else if (isBone) {
         ctx.lineCap = 'round';
         ctx.strokeStyle = '#1e293b';
-        ctx.lineWidth = 7 + thickBoost;
+        ctx.lineWidth = sw(0.3) + thickBoost;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
         ctx.strokeStyle = '#e2e8f0';
-        ctx.lineWidth = 3.5 + thickBoost * 0.6;
+        ctx.lineWidth = sw(0.15) + thickBoost * 0.6;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
@@ -388,14 +449,14 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
         if (ratio < 0.92) muscleColor = '#22d3ee';
         else if (ratio > 1.08) muscleColor = '#fb923c';
         ctx.strokeStyle = muscleColor;
-        ctx.lineWidth = 4 + thickBoost;
+        ctx.lineWidth = sw(0.18) + thickBoost;
         ctx.lineCap = 'round';
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
         ctx.strokeStyle = '#475569';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = sw(0.07);
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         ctx.beginPath();
@@ -407,10 +468,10 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
     }
 
     if (!hideSkeleton) {
-      const solidIds = solidNodeIdSet(solidsRef.current);
+      const solidIds = solidNodeIdSet(previewBodyRef.current?.solids ?? []);
       for (const node of nodes) {
         const p = toScreen(node.x, node.y);
-        const r = Math.max(3, node.radius * scale * 0.85);
+        const r = Math.max(1.5, node.radius * scale * 0.85);
         ctx.save();
         if (node.isWheel) {
           ctx.beginPath();
@@ -418,10 +479,10 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
           ctx.fillStyle = '#0f172a';
           ctx.fill();
           ctx.strokeStyle = node.isMotorWheel ? '#f59e0b' : '#94a3b8';
-          ctx.lineWidth = node.isMotorWheel ? 2.5 : 2;
+          ctx.lineWidth = node.isMotorWheel ? sw(0.11) : sw(0.09);
           ctx.stroke();
           ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(2, r * 0.28), 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, Math.max(0.8, r * 0.28), 0, Math.PI * 2);
           ctx.fillStyle = node.isMotorWheel ? '#f59e0b' : node.color;
           ctx.fill();
         } else if (solidIds.has(node.id)) {
@@ -429,7 +490,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
           ctx.fillStyle = node.color;
           ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
           ctx.strokeStyle = '#0f172a';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = sw(0.07);
           ctx.strokeRect(p.x - s / 2, p.y - s / 2, s, s);
         } else {
           ctx.beginPath();
@@ -437,7 +498,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
           ctx.fillStyle = node.color;
           ctx.fill();
           ctx.strokeStyle = '#334155';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = sw(0.07);
           ctx.stroke();
         }
         if (node.isFoot && !node.isWheel) {
@@ -445,7 +506,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
           ctx.moveTo(p.x - r * 0.85, p.y + r * 0.55);
           ctx.lineTo(p.x + r * 0.85, p.y + r * 0.55);
           ctx.strokeStyle = '#059669';
-          ctx.lineWidth = 2;
+          ctx.lineWidth = sw(0.09);
           ctx.lineCap = 'round';
           ctx.stroke();
         }
@@ -456,7 +517,7 @@ export const RangePreviewVisualizer: React.FC<RangePreviewVisualizerProps> = ({
           ctx.lineTo(p.x - s, p.y - s * 0.15);
           ctx.lineTo(p.x + s * 0.15, p.y - s * 0.15);
           ctx.strokeStyle = '#e11d48';
-          ctx.lineWidth = 1.75;
+          ctx.lineWidth = sw(0.08);
           ctx.lineCap = 'round';
           ctx.lineJoin = 'round';
           ctx.stroke();

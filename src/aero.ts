@@ -22,10 +22,31 @@
  */
 
 import { Creature, PhysicsMuscle, PhysicsNode, effectiveAeroArea } from './types';
+import { CREATURE_WORLD_SCALE } from './creatureScale';
 
-const MAX_WING_FORCE = 3.6;
+const MAX_WING_FORCE = 8;
 const MAX_PARA_FORCE = 5.2;
 const MAX_CHUTE_FORCE = 6.5;
+
+/**
+ * Geometry was scaled by CREATURE_WORLD_SCALE and aeroArea by scale², but world
+ * gravity stayed absolute (px/frame²). Multiply aero impulses by 1/scale² so
+ * coefficients match pre-scale area for sails/chutes/wings.
+ */
+const AERO_FORCE_SCALE = 1 / (CREATURE_WORLD_SCALE * CREATURE_WORLD_SCALE);
+/**
+ * Wing tip airspeeds also shrink ~linearly with body size, so dynamic pressure
+ * drops with scale. Full 1/scale² (100×) is too strong once caps allow climb;
+ * ~50× restores stock RoboBird takeoff + short sustained bouts above the
+ * body-scaled flight floor (enough to beat ground-touch penalties).
+ */
+const WING_Q_SCALE = 50;
+const WING_AERO_SCALE = AERO_FORCE_SCALE * WING_Q_SCALE;
+
+/** Legacy authoring lengths → world px (stroke gates, tip epsilons, span checks). */
+function aeroLen(legacyPx: number): number {
+  return legacyPx * CREATURE_WORLD_SCALE;
+}
 
 /**
  * Node air velocity in px/frame (PHYSICS_DT ≡ 1).
@@ -158,6 +179,8 @@ function bodyFreeStream(creature: Creature) {
   comVy /= massSum;
   const speed = Math.hypot(comVx, comVy);
   const airborne = !creature.nodes.some(n => n.isGround);
+  // ~one body-weight of impulse budget (n nodes × gravity 0.4). Wing caps use a
+  // multiple of this so matched downstrokes can climb, not only hop.
   const weightScale = Math.max(2, creature.nodes.length) * 0.4;
   return { comVx, comVy, speed, airborne, weightScale };
 }
@@ -313,12 +336,30 @@ type WingMuscle = PhysicsMuscle & {
   _reversals?: number[];
 };
 
-const MIN_STROKE_SWEEP = 18;
-const FULL_STROKE_SWEEP = 60;
+const MIN_STROKE_SWEEP = aeroLen(18);
+const FULL_STROKE_SWEEP = aeroLen(60);
 const MIN_STROKE_FRAMES = 3;
 const STROKE_RESET_FRAMES = 2;
 const REVERSAL_WINDOW = 20;
 const MAX_REVERSAL_RATE = 0.3;
+/** Tip relative-Y motion that counts as stroke direction (legacy 0.5px). */
+const TIP_STROKE_DIR_EPS = aeroLen(0.5);
+/** Commanded length change that counts as active flap work (legacy 1.2px). */
+const FLAP_CMD_DELTA_MIN = aeroLen(1.2);
+/** Tip airspeed that also counts as flap work while a downstroke is held. */
+const FLAP_STROKE_VY_MIN = aeroLen(0.8);
+/** L/R tip level match span for bird-pair scoring (legacy 45px). */
+const TIP_LEVEL_SPAN = aeroLen(45);
+/** Min opposite-side span before two wings count as a pair (legacy 18px). */
+const WING_PAIR_SPAN_MIN = aeroLen(18);
+/** Floor for canopy max-length openness math (legacy 12px). */
+const CANOPY_MAX_LENGTH_FLOOR = Math.max(1, aeroLen(12));
+/**
+ * Per-wing impulse cap as a multiple of body weightScale.
+ * With WING_Q_SCALE restoring tip-speed authority, ~1.55× lets matched
+ * downstrokes clear the flight floor and sustain without unbounded climb.
+ */
+const WING_WEIGHT_CAP_MULT = 1.55;
 
 function strokeSweepRamp(accum: number): number {
   if (accum <= MIN_STROKE_SWEEP) return 0;
@@ -348,7 +389,12 @@ export type WingStrokeState = {
  */
 export function wingPairBirdScore(left: WingStrokeState, right: WingStrokeState): number {
   if (!left.downstroke || !right.downstroke) return 0;
-  if (!left.flapping && !right.flapping && left.strokeVy < 0.12 && right.strokeVy < 0.12) {
+  if (
+    !left.flapping &&
+    !right.flapping &&
+    left.strokeVy < FLAP_STROKE_VY_MIN &&
+    right.strokeVy < FLAP_STROKE_VY_MIN
+  ) {
     return 0;
   }
   const meanSweep = 0.5 * (left.sweepFraction + right.sweepFraction);
@@ -358,10 +404,14 @@ export function wingPairBirdScore(left: WingStrokeState, right: WingStrokeState)
     1 - Math.min(1, Math.abs(left.strokeAuthority - right.strokeAuthority) / Math.max(0.35, meanAuth));
   const meanCmd = 0.5 * (Math.abs(left.cmdDelta) + Math.abs(right.cmdDelta));
   const cmdMatch =
-    meanCmd < 0.08
+    meanCmd < FLAP_CMD_DELTA_MIN * 0.65
       ? 0.65
-      : 1 - Math.min(1, Math.abs(left.cmdDelta - right.cmdDelta) / Math.max(0.2, meanCmd));
-  const tipLevel = 1 - Math.min(1, Math.abs(left.tip.y - right.tip.y) / 45);
+      : 1 -
+        Math.min(
+          1,
+          Math.abs(left.cmdDelta - right.cmdDelta) / Math.max(FLAP_CMD_DELTA_MIN, meanCmd)
+        );
+  const tipLevel = 1 - Math.min(1, Math.abs(left.tip.y - right.tip.y) / TIP_LEVEL_SPAN);
   return Math.max(0, Math.min(1, (0.4 * authMatch + 0.22 * cmdMatch + 0.18 * tipLevel + 0.2 * meanSweep)));
 }
 
@@ -430,7 +480,8 @@ export function applyWingForces(creature: Creature) {
     let strokeAccum = wing._strokeAccum ?? 0;
     let strokeFrames = wing._strokeFrames ?? 0;
 
-    const frameDir = tipDeltaY > 0.5 ? 1 : tipDeltaY < -0.5 ? -1 : 0;
+    const frameDir =
+      tipDeltaY > TIP_STROKE_DIR_EPS ? 1 : tipDeltaY < -TIP_STROKE_DIR_EPS ? -1 : 0;
 
     if (frameDir !== 0 && frameDir === strokeDir) {
       strokeAccum += Math.abs(tipDeltaY);
@@ -476,15 +527,23 @@ export function applyWingForces(creature: Creature) {
 
     const seg = segmentVelocity(a, b);
     const strokeVy = seg.vy - comVy;
-    const flapping = downstroke && Math.abs(cmdDelta) > 0.12;
+    // Soft muscles often hold a constant target mid-stroke; credit tip motion too.
+    const flapping =
+      downstroke &&
+      (Math.abs(cmdDelta) > FLAP_CMD_DELTA_MIN || strokeVy > FLAP_STROKE_VY_MIN);
     if (flapping) {
       creature.wingFlapFrames = (creature.wingFlapFrames ?? 0) + 1;
-      creature.wingFlapWork = (creature.wingFlapWork ?? 0) + Math.abs(cmdDelta);
+      creature.wingFlapWork =
+        (creature.wingFlapWork ?? 0) +
+        Math.max(Math.abs(cmdDelta), strokeVy * 0.35);
     }
 
     const strokeAuthority = Math.min(
       1.65,
-      (0.75 + Math.max(0, strokeVy) * 0.28 + Math.max(0, cmdDelta) * 0.015) * sweepFraction
+      (0.75 +
+        Math.max(0, strokeVy) * 0.28 +
+        Math.max(0, cmdDelta) * (0.015 / Math.max(CREATURE_WORLD_SCALE, 0.01))) *
+        sweepFraction
     );
 
     strokes.push({
@@ -513,7 +572,9 @@ export function applyWingForces(creature: Creature) {
     if (left === right) continue;
     // Require opposite sides of the COM (or a clear span) so same-side fans
     // are not treated as a bird pair.
-    if (left.side * right.side > 0 && Math.abs(left.side - right.side) < 18) continue;
+    if (left.side * right.side > 0 && Math.abs(left.side - right.side) < WING_PAIR_SPAN_MIN) {
+      continue;
+    }
     pairedMuscleIds.add(left.muscle.id);
     pairedMuscleIds.add(right.muscle.id);
     const bird = wingPairBirdScore(left, right);
@@ -546,15 +607,16 @@ export function applyWingForces(creature: Creature) {
     const q = speed * speed;
 
     if (!downstroke || facing < 0.08) {
-      const moving = Math.abs(stroke.cmdDelta) > 0.12;
-      const drag = area * (moving ? 0.0007 : 0.0009) * q * (0.15 + 0.85 * facing);
+      const moving = Math.abs(stroke.cmdDelta) > FLAP_CMD_DELTA_MIN;
+      const drag =
+        area * WING_AERO_SCALE * (moving ? 0.0007 : 0.0009) * q * (0.15 + 0.85 * facing);
       applySegmentImpulse(a, b, -(vx / speed) * drag, -(vy / speed) * drag, MAX_WING_FORCE * 0.55);
       continue;
     }
 
     const paired = pairedMuscleIds.has(muscle.id);
     const pairScale = wingPairLiftScale(birdByMuscle.get(muscle.id), paired);
-    const projected = area * facing * facing;
+    const projected = area * WING_AERO_SCALE * facing * facing;
     const pressure = projected * 0.055 * strokeAuthority * q * pairScale;
     let fx = nx * pressure * 0.15 + rwX * pressure * 0.85;
     let fy = ny * pressure * 0.15 + rwY * pressure * 0.85;
@@ -570,13 +632,13 @@ export function applyWingForces(creature: Creature) {
     fy -= (vy / speed) * drag;
 
     if (Math.hypot(fx, fy) < 0.002) continue;
-    const cap = Math.min(MAX_WING_FORCE, weightScale * 1.1);
+    const cap = Math.min(MAX_WING_FORCE, weightScale * WING_WEIGHT_CAP_MULT);
     applySegmentImpulse(a, b, fx, fy, cap);
   }
 }
 
 function canopyOpenness(muscle: PhysicsMuscle, len: number): number {
-  const maxL = Math.max(12, muscle.maxLength || muscle.originalLength || len);
+  const maxL = Math.max(CANOPY_MAX_LENGTH_FLOOR, muscle.maxLength || muscle.originalLength || len);
   const minL = Math.max(1, muscle.minLength || maxL * 0.5);
   const geometric = Math.min(1, Math.max(0.12, len / maxL));
   // 0 at minLength (fully reefed) → 1 at maxLength (fully open)
@@ -779,8 +841,8 @@ export function applyParagliderForces(creature: Creature) {
     });
 
     const qFwd = fwd * fwd;
-    let liftMag = area * openness * 0.0052 * qFwd * Cl;
-    let dragMag = area * openness * 0.0012 * qFwd * Cd;
+    let liftMag = area * AERO_FORCE_SCALE * openness * 0.0052 * qFwd * Cl;
+    let dragMag = area * AERO_FORCE_SCALE * openness * 0.0012 * qFwd * Cd;
     const liftCap = airborne ? weightScale * 1.9 : weightScale * 1.35;
     liftMag = Math.min(Math.max(liftMag, 0), liftCap);
     if (!airborne) {
@@ -813,11 +875,12 @@ export function applyParagliderForces(creature: Creature) {
 
     const fx = lx * liftMag - vhx * dragMag;
     const fy = ly * liftMag - vhy * dragMag;
-    // Light tips (Proven Glider ≈0.05): keep canopy share near legacy equal-impulse
-    // so the cart still lifts and trim does not rocket. Moderate tips (Baseline ≈0.45):
-    // higher canopy share so sail forces produce useful pitch torque (F02).
+    // Light tips (legacy Proven Glider ≈0.05 → world ≈5e-5): keep canopy share near
+    // legacy equal-impulse so the cart still lifts and trim does not rocket.
+    // Moderate tips (Baseline ≈0.45 → world ≈4.5e-4): higher canopy share for pitch torque.
     const tipMass = 0.5 * (a.mass + b.mass);
-    const canopyShare = tipMass < 0.2 ? 0.34 : 0.55;
+    const lightTipMass = 0.2 * CREATURE_WORLD_SCALE * CREATURE_WORLD_SCALE * CREATURE_WORLD_SCALE;
+    const canopyShare = tipMass < lightTipMass ? 0.34 : 0.55;
     applyParaCanopyLoad(
       a,
       b,
@@ -876,8 +939,8 @@ export function applyDiagnosticClassicalPlateForces(creature: Creature) {
       lx = -lx;
       ly = -ly;
     }
-    const liftMag = area * 0.0045 * q * Math.abs(Cl);
-    const dragMag = area * 0.0015 * q * Cd;
+    const liftMag = area * AERO_FORCE_SCALE * 0.0045 * q * Math.abs(Cl);
+    const dragMag = area * AERO_FORCE_SCALE * 0.0015 * q * Cd;
     const fx = lx * liftMag - vhx * dragMag;
     const fy = ly * liftMag - vhy * dragMag;
     applySegmentImpulse(a, b, fx, fy, MAX_WING_FORCE);
@@ -945,7 +1008,7 @@ export function applyParachuteForces(creature: Creature) {
     // Edge-on or collapsed: negligible skin friction only on the canopy.
     if (!airborne || speed < 0.15 || facing < 0.1 || inflation < 0.08) {
       if (speed >= 0.2 && airborne) {
-        const skin = effectiveAeroArea(muscle) * 0.00025 * speed * speed;
+        const skin = effectiveAeroArea(muscle) * AERO_FORCE_SCALE * 0.00025 * speed * speed;
         applySegmentImpulse(a, b, (vx / speed) * -skin, (vy / speed) * -skin, MAX_CHUTE_FORCE * 0.2);
       }
       continue;
@@ -953,10 +1016,10 @@ export function applyParachuteForces(creature: Creature) {
 
     const area = effectiveAeroArea(muscle);
     // Geometric reef if the soft span is crumpled short.
-    const maxL = Math.max(12, muscle.maxLength || muscle.originalLength || len);
+    const maxL = Math.max(CANOPY_MAX_LENGTH_FLOOR, muscle.maxLength || muscle.originalLength || len);
     const geometric = Math.min(1, Math.max(0.2, len / maxL));
     // Projected cup area — facing² kills vertical / edge-on buoyancy.
-    const projected = area * geometric * inflation * facing * facing;
+    const projected = area * AERO_FORCE_SCALE * geometric * inflation * facing * facing;
     const q = speed * speed;
     // Pressure drag along relative wind (air pushes the cup).
     const dragMag = projected * 0.011 * q;

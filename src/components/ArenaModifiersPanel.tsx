@@ -15,6 +15,10 @@ import {
   BASE_GAP_WIDTH,
   BASE_RAMP_WIDTH,
   DEFAULT_RAMP_ANGLE_DEG,
+  clampTowerHeightPx,
+  MIN_TOWER_HEIGHT,
+  MAX_TOWER_HEIGHT,
+  BASE_TOWER_HEIGHT,
 } from '../physicsConstants';
 import { ArenaZoneId, ARENA_ZONES } from '../zones';
 
@@ -226,6 +230,32 @@ export const ArenaModifiersPanel: React.FC<ArenaModifiersPanelProps> = ({
           <span className="tabular-nums w-8">
             {clampRampAngleDeg(config.arena.rampAngleDeg ?? DEFAULT_RAMP_ANGLE_DEG)}°
           </span>
+        </div>
+        )}
+        {config.goal === EvolutionGoal.CHUTE_DESCENT && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600 mt-2">
+          <span className="font-semibold shrink-0">Tower height</span>
+          <input
+            type="range"
+            min={MIN_TOWER_HEIGHT}
+            max={MAX_TOWER_HEIGHT}
+            step={50}
+            value={clampTowerHeightPx(config.arena.towerHeightPx ?? BASE_TOWER_HEIGHT)}
+            onChange={e => updateArena({ towerHeightPx: parseInt(e.target.value, 10) })}
+            className="min-w-32 flex-1 accent-cyan-600"
+            title="Launch platform height for Chute Descent — creatures spawn at the top"
+          />
+          <input
+            type="number"
+            min={MIN_TOWER_HEIGHT}
+            max={MAX_TOWER_HEIGHT}
+            step={50}
+            value={clampTowerHeightPx(config.arena.towerHeightPx ?? BASE_TOWER_HEIGHT)}
+            onChange={e => updateArena({ towerHeightPx: clampTowerHeightPx(parseInt(e.target.value, 10) || MIN_TOWER_HEIGHT) })}
+            className="w-24 rounded border px-1.5 py-0.5 tabular-nums text-right"
+            aria-label="Tower height in pixels"
+          />
+          <span className="tabular-nums text-slate-500">px (max {MAX_TOWER_HEIGHT.toLocaleString()})</span>
         </div>
         )}
         <div className="flex items-center gap-2 text-[11px] text-slate-600 mt-2">

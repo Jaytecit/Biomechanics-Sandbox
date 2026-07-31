@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 Backup/
+# Scratch debug artifacts (video frame dumps, one-off trace scripts)
+.tmp-*

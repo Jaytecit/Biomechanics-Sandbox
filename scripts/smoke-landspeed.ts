@@ -38,17 +38,26 @@ assert.ok(
 // Airborne thrash (high peakSpeed, low peakLandSpeed) must lose to real land speed
 const thrash = fakeCreature({
   currentX: 100 + 400,
+  restBodyWidth: 80,
   peakSpeed: 12,
   peakLandSpeed: 1.5,
 });
+const spike = fakeCreature({
+  currentX: 100 + 5,
+  restBodyWidth: 80,
+  peakLandSpeed: 12,
+});
 const lander = fakeCreature({
   currentX: 100 + 200,
+  restBodyWidth: 80,
   peakSpeed: 6,
   peakLandSpeed: 6,
 });
 
+const spikeScore = calculateFitness(spike, GOAL, [], undefined, obstacles);
 const thrashScore = calculateFitness(thrash, GOAL, [], undefined, obstacles);
 const landScore = calculateFitness(lander, GOAL, [], undefined, obstacles);
+assert.ok(spikeScore < 50, `grounded spike without travel must stay gated (${spikeScore})`);
 assert.ok(landScore > thrashScore, `land (${landScore}) should beat thrash (${thrashScore})`);
 assert.ok(landScore > 300, `peak land 6 should score ~330+, got ${landScore}`);
 
@@ -56,4 +65,4 @@ assert.ok(landScore > 300, `peak land 6 should score ~330+, got ${landScore}`);
 const expected = 6 * 55 + Math.min(200, 800) * 0.2;
 assert.ok(Math.abs(landScore - expected) < 0.01, `score ${landScore} ≠ expected ${expected}`);
 
-console.log('smoke-landspeed PASS', { thrashScore, landScore, expected });
+console.log('smoke-landspeed PASS', { spikeScore, thrashScore, landScore, expected });

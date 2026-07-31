@@ -15,6 +15,10 @@ import {
   SimulationConfig,
 } from '../types';
 import { CHALLENGES } from '../challenges';
+import {
+  evaluateChallengeConstraints,
+  formatChallengeRules,
+} from '../challengeConstraints';
 import { encodeSnapshot, decodeSnapshot } from '../shareCode';
 import { createRandomMorph } from '../randomMorph';
 import {
@@ -35,6 +39,7 @@ interface DiscoveryPanelProps {
   onUpdateConfig: (partial: Partial<SimulationConfig>) => void;
   creatures: Creature[];
   selectedCreatureId: string | null;
+  selectedBlueprint: CreatureBlueprint;
   currentGen: number;
   bestEverFitness: number;
   challengeProgress: Record<
@@ -68,6 +73,7 @@ export const DiscoveryPanel: React.FC<DiscoveryPanelProps> = ({
   onUpdateConfig,
   creatures,
   selectedCreatureId,
+  selectedBlueprint,
   currentGen,
   bestEverFitness,
   challengeProgress,
@@ -173,6 +179,8 @@ export const DiscoveryPanel: React.FC<DiscoveryPanelProps> = ({
             const prog = challengeProgress[ch.id];
             const cleared = prog?.cleared;
             const isActive = activeChallengeId === ch.id;
+            const morphology = evaluateChallengeConstraints(selectedBlueprint, ch.constraints);
+            const rules = formatChallengeRules(ch);
             return (
               <button
                 key={ch.id}
@@ -183,7 +191,9 @@ export const DiscoveryPanel: React.FC<DiscoveryPanelProps> = ({
                     ? 'border-amber-300 bg-amber-50/80'
                     : isActive
                       ? 'border-indigo-500 bg-indigo-50/70 ring-1 ring-indigo-200'
-                      : 'border-slate-100 bg-slate-50/50 hover:bg-slate-50'
+                      : morphology.ok
+                        ? 'border-slate-100 bg-slate-50/50 hover:bg-slate-50'
+                        : 'border-rose-100 bg-rose-50/40 hover:bg-rose-50/60'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -194,7 +204,16 @@ export const DiscoveryPanel: React.FC<DiscoveryPanelProps> = ({
                     </span>
                   )}
                 </div>
-                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug line-clamp-2">{ch.description}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug line-clamp-3">{ch.description}</p>
+                {rules && (
+                  <p className="text-[9px] font-semibold text-slate-400 mt-1 leading-snug">{rules}</p>
+                )}
+                {!morphology.ok && (
+                  <p className="text-[9px] font-semibold text-rose-600 mt-1 leading-snug">
+                    Body mismatch: {morphology.reasons.slice(0, 2).join('; ')}
+                    {morphology.reasons.length > 2 ? '…' : ''}
+                  </p>
+                )}
                 <div className="mt-1 flex justify-between text-[10px] font-semibold text-slate-400">
                   <span>
                     Best {prog?.bestScore?.toFixed?.(0) ?? 0}/
@@ -209,7 +228,15 @@ export const DiscoveryPanel: React.FC<DiscoveryPanelProps> = ({
         </div>
         {activeChallengeId && (
           <p className="text-[10px] text-indigo-600 font-medium mt-1.5">
-            Active · Gen {currentGen} · Best {bestEverFitness.toFixed(1)} pts
+            Active · Gen {currentGen} · Best{' '}
+            {(() => {
+              const active = CHALLENGES.find(c => c.id === activeChallengeId);
+              const ok = active
+                ? evaluateChallengeConstraints(selectedBlueprint, active.constraints).ok
+                : true;
+              return ok ? bestEverFitness.toFixed(1) : '0 (body rules violated)';
+            })()}{' '}
+            pts
           </p>
         )}
       </CollapsibleSection>

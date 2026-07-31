@@ -5,6 +5,20 @@
 
 // --- PHYSICS TYPES ---
 
+/**
+ * C2 authoritative contact class (observation / provenance only).
+ * Priority when multiple contacts land on one node: object > structure > floor.
+ */
+export const CONTACT_NONE = 0;
+export const CONTACT_FLOOR = 1;
+export const CONTACT_STRUCTURE = 2;
+export const CONTACT_OBJECT = 3;
+export type ContactClass =
+  | typeof CONTACT_NONE
+  | typeof CONTACT_FLOOR
+  | typeof CONTACT_STRUCTURE
+  | typeof CONTACT_OBJECT;
+
 export interface PhysicsNode {
   id: number;
   x: number;
@@ -17,6 +31,11 @@ export interface PhysicsNode {
   radius: number;
   friction: number;
   isGround: boolean;
+  /**
+   * C2: highest-priority contact class resolved this frame (runtime only).
+   * Cleared with `isGround` each integrate; never applies force by itself.
+   */
+  contactClass?: ContactClass;
   color?: string;
   /** Roller: rolls on contact instead of gripping the ground */
   isWheel?: boolean;
@@ -49,15 +68,37 @@ export interface PhysicsNode {
  * Soft-body link role:
  * - muscle: soft spring actuator (brain-driven unless parachute)
  * - bone: fixed-length hard constraint (not brain-driven)
- * - telescope: variable-length hard constraint (brain-driven unless a parallel
- *   soft muscle on the same node pair slaves its targetLength). Stroke rate is
- *   global: max(4px, 25% of stroke) per physics tick.
- * - piston: same hard variable strut as telescope, but compression/expansion
- *   rates are authored per link (px per tick).
+ * - piston: variable-length hard strut (brain-driven unless a parallel soft
+ *   muscle on the same node pair slaves its targetLength). Compression /
+ *   expansion rates are authored per link (px per tick).
  *
- * Legacy blueprints omit linkKind; resolveLinkKind infers bone vs muscle.
+ * Legacy blueprints may still carry `linkKind: 'telescope'`; normalize on load
+ * to piston with stroke-seeded rates (D150). Omitting linkKind is inferred.
  */
-export type MuscleLinkKind = 'muscle' | 'bone' | 'telescope' | 'piston';
+export type MuscleLinkKind = 'muscle' | 'bone' | 'piston';
+/** Pre-D150 hard variable strut; accepted only for JSON migration. */
+export type LegacyMuscleLinkKind = MuscleLinkKind | 'telescope';
+
+/** Discrete mid-bone attach slots for soft-muscle moment arms (D151). */
+export type MuscleLeverSlot = 'nearA' | 'mid' | 'nearB';
+
+/** Parametric t along host bone nodeA→nodeB for each lever slot. */
+export const LEVER_SLOT_T: Record<MuscleLeverSlot, number> = {
+  nearA: 0.25,
+  mid: 0.5,
+  nearB: 0.75,
+};
+
+export function isValidLeverSlot(value: unknown): value is MuscleLeverSlot {
+  return value === 'nearA' || value === 'mid' || value === 'nearB';
+}
+
+/** True when a soft muscle uses at least one bone-slot lever. */
+export function muscleHasLever(
+  muscle: Pick<{ leverBoneA?: number; leverBoneB?: number }, 'leverBoneA' | 'leverBoneB'>
+): boolean {
+  return muscle.leverBoneA !== undefined || muscle.leverBoneB !== undefined;
+}
 
 export interface PhysicsMuscle {
   id: number;
@@ -70,7 +111,7 @@ export interface PhysicsMuscle {
   strength: number;
   phaseOffset: number;
   /** Explicit link role; omit on legacy bodies (inferred). */
-  linkKind?: MuscleLinkKind;
+  linkKind?: MuscleLinkKind | 'telescope';
   /**
    * Piston only: max length increase per physics tick (px). Ignored on other
    * link kinds. Clamped to MIN/MAX_PISTON_RATE when applied.
@@ -81,6 +122,11 @@ export interface PhysicsMuscle {
    * link kinds. Clamped to MIN/MAX_PISTON_RATE when applied.
    */
   retractRate?: number;
+  /**
+   * Soft muscle only: max |ΔtargetLength| per physics tick (px).
+   * `undefined` = inherit creature default; `0` = force unlimited.
+   */
+  softMaxDeltaPerTick?: number;
   /** Soft-paint visual/structural thickness (studio); default 1 */
   thickness?: number;
   color?: string;
@@ -100,6 +146,18 @@ export interface PhysicsMuscle {
   /** Runtime cup normal used for billow drawing (unit; not part of blueprint). */
   _chuteNx?: number;
   _chuteNy?: number;
+  /**
+   * Soft muscle only (D151): host bone index in `muscles[]` for end A.
+   * When set, the constraint anchor is a virtual point on that rigid bone
+   * at `leverSlotA` instead of `nodeA`.
+   */
+  leverBoneA?: number;
+  /** Soft muscle only: slot along host bone A (`nearA`=0.25, `mid`=0.5, `nearB`=0.75). */
+  leverSlotA?: MuscleLeverSlot;
+  /** Soft muscle only: host bone index for end B. */
+  leverBoneB?: number;
+  /** Soft muscle only: slot along host bone B. */
+  leverSlotB?: MuscleLeverSlot;
   /**
    * Runtime: last targetLength seen by the length solver (D142). Used to detect
    * actuation vs held commands. Not part of the blueprint.
@@ -122,7 +180,9 @@ export interface Obstacle {
     | 'checkpoint'
     | 'target'
     /** Heightfield segment: surface from (x,y) → (x2,y2) */
-    | 'terrain';
+    | 'terrain'
+    /** Launch tower for parachute descent goals */
+    | 'tower';
   x: number;
   y: number;
   width: number;
@@ -265,6 +325,8 @@ export enum EvolutionGoal {
    * Three NEAT heads with hard phase takeover (Proven Glider).
    */
   PARA_RAMP_GLIDE = 'PARA_RAMP_GLIDE',
+  /** Step off a tower, deploy parachute, and land softly on the pad below. */
+  CHUTE_DESCENT = 'CHUTE_DESCENT',
   CUSTOM = 'CUSTOM',
 }
 
@@ -279,6 +341,7 @@ const FLIGHT_GOALS: ReadonlySet<EvolutionGoal> = new Set([
   EvolutionGoal.GLIDE_RANGE,
   EvolutionGoal.AERIAL_CROSSING,
   EvolutionGoal.PARA_RAMP_GLIDE,
+  EvolutionGoal.CHUTE_DESCENT,
 ]);
 
 /** Flight curriculum goals — no camping pads. */
@@ -422,6 +485,8 @@ export interface ArenaModifiers {
    * Widens gaps / raises bars / pushes finishes.
    */
   progressiveTier: number;
+  /** Tower platform height above ground (CHUTE_DESCENT + Environment Studio towers). */
+  towerHeightPx: number;
 }
 
 export type WorldObjectType = 'ball' | 'box' | 'hoop';
@@ -575,6 +640,11 @@ export interface CreatureBlueprint {
   relativePositions: { x: number; y: number }[];
   /** Optional rigid plates; omitted on legacy bodies. */
   solidSegments?: SolidSegmentSpec[];
+  /**
+   * Soft-muscle command rate cap (px/tick) for all soft actuators that do not
+   * override with `softMaxDeltaPerTick`. Omit / undefined = unlimited (legacy).
+   */
+  softMuscleMaxDeltaPerTick?: number;
 }
 
 export interface Creature {
@@ -610,6 +680,16 @@ export interface Creature {
    * Shape-matched each physics tick; not part of the genome I/O.
    */
   solidBodies?: RuntimeSolidBody[];
+  /**
+   * C2: hard-link capsule contacted a structure this frame (runtime observation).
+   */
+  linkContactStructure?: boolean;
+  /**
+   * C2: hard-link capsule contacted a private/world object this frame.
+   * Reserved — node–object collisions own object class today; stays false until
+   * link–object capsules exist. Included so the observation pack stays stable.
+   */
+  linkContactObject?: boolean;
   startX: number;
   startY: number;
   /**
@@ -716,6 +796,15 @@ export interface Creature {
   jumpHeightBestClearance?: number;
   /** Best isolated-jump speed bout score this episode. */
   jumpSpeedBestBoutScore?: number;
+  /**
+   * Raw metrics for the best JUMP_SPEED bout so live recipe edits can re-score
+   * without relying on a stale coefficient-scaled total.
+   */
+  jumpSpeedBestBoutMetrics?: {
+    peakSpeed: number;
+    frames: number;
+    peakClearance: number;
+  };
   /** Accumulated rightward travel across hop-chain bouts. */
   hopDistanceRight?: number;
   /** Accumulated leftward travel across hop-chain bouts. */
@@ -779,6 +868,16 @@ export interface Creature {
   fellInPit?: boolean;
   /** Cleared a gap / pit by reaching the far side without falling */
   gapCleared?: boolean;
+  /**
+   * Clear Gap: best fraction of pit width reached by the leading hull edge
+   * (0…1), including failed jumps that never fully clear.
+   */
+  gapSpanFraction?: number;
+  /**
+   * Clear Gap: earned the pre-lip jump incentive (all wheels airborne in the
+   * 40px window immediately left of the pit start).
+   */
+  gapPreJump?: boolean;
   /** Aerial Crossing: regained authoritative support beyond the far pit lip */
   aerialCrossingLanded?: boolean;
   /** Crossed the finish line */
@@ -1018,6 +1117,8 @@ export interface Creature {
   flightAcrobaticsBestBoutScore?: number;
   /** R2: best complete climb-descent-stick Flight Land attempt */
   flightLandBestBoutScore?: number;
+  /** Best CHUTE_DESCENT composite score (descent + landing). */
+  chuteDescentBestScore?: number;
   /** Hoop travel counted only while the hoop is near terrain (not lofted) */
   hoopGroundedTravel?: number;
   /** Frames the hoop spent lofted above rolling height */
@@ -1056,6 +1157,9 @@ export interface GenerationRecord {
   bestCreatureData?: string;
 }
 
+/** Built-in reward recipe (Phase 22A). Defined in builtInRewardCoeffs.ts. */
+export type BuiltInRewardRecipeRef = import('./builtInRewardCoeffs').BuiltInRewardRecipe;
+
 export interface SimulationConfig {
   populationSize: number;
   generationDuration: number;
@@ -1068,6 +1172,11 @@ export interface SimulationConfig {
   groundFriction: number;
   arena: ArenaModifiers;
   customGoal: CustomGoalConfig;
+  /**
+   * Optional live built-in reward coefficients (SPEED / JUMP_SPEED pilot).
+   * Omit or leave at defaults for shipped scoring.
+   */
+  rewardRecipe?: BuiltInRewardRecipeRef;
   /** Which ParaPilot head is evolving (PARA_RAMP_GLIDE). */
   paraPilotStage?: ParaPilotStage;
   /** Recent best-of-gen scores for the active stage (auto-advance). */
@@ -1090,6 +1199,7 @@ export const DEFAULT_ARENA_MODIFIERS: ArenaModifiers = {
   /** Matches BASE_RAMP_WIDTH (scaleW(200)). */
   rampWidthPx: 600,
   progressiveTier: 0,
+  towerHeightPx: 280,
 };
 
 export const DEFAULT_CUSTOM_GOAL: CustomGoalConfig = {
@@ -1103,22 +1213,52 @@ export const DEFAULT_CUSTOM_GOAL: CustomGoalConfig = {
 
 export type LinkKindFields = Pick<
   PhysicsMuscle,
-  'minLength' | 'maxLength' | 'strength' | 'linkKind' | 'extendRate' | 'retractRate'
+  | 'minLength'
+  | 'maxLength'
+  | 'strength'
+  | 'linkKind'
+  | 'extendRate'
+  | 'retractRate'
+  | 'softMaxDeltaPerTick'
 >;
 
 export type BrainDrivenFields = LinkKindFields &
-  Pick<PhysicsMuscle, 'aeroType' | 'id' | 'nodeA' | 'nodeB'>;
+  Pick<
+    PhysicsMuscle,
+    | 'aeroType'
+    | 'id'
+    | 'nodeA'
+    | 'nodeB'
+    | 'leverBoneA'
+    | 'leverSlotA'
+    | 'leverBoneB'
+    | 'leverSlotB'
+  >;
 
-/** Studio / physics clamp for piston compression & expansion rates (px/tick). */
-export const MIN_PISTON_RATE = 0.25;
-export const MAX_PISTON_RATE = 500;
-/** Default piston rates match the telescope floor before stroke scaling. */
-export const DEFAULT_PISTON_EXTEND_RATE = 4;
-export const DEFAULT_PISTON_RETRACT_RATE = 4;
+/**
+ * Studio / physics clamp for piston compression & expansion rates (px/tick).
+ * World units after CREATURE_WORLD_SCALE (legacy authoring was ~2.5–500).
+ */
+export const MIN_PISTON_RATE = 0.05;
+export const MAX_PISTON_RATE = 50;
+/** Default piston rates match the pre-D150 telescope floor before stroke scaling. */
+export const DEFAULT_PISTON_EXTEND_RATE = 0.4;
+export const DEFAULT_PISTON_RETRACT_RATE = 0.4;
+
+/** Soft-muscle command rate clamps (px/tick); same band as pistons. */
+export const MIN_SOFT_MUSCLE_RATE = 0.05;
+export const MAX_SOFT_MUSCLE_RATE = 50;
+/** Seed when enabling a soft-muscle body/muscle rate cap in Studio. */
+export const DEFAULT_SOFT_MUSCLE_RATE = 0.4;
 
 export function clampPistonRate(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_PISTON_EXTEND_RATE;
   return Math.max(MIN_PISTON_RATE, Math.min(MAX_PISTON_RATE, value));
+}
+
+export function clampSoftMuscleRate(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SOFT_MUSCLE_RATE;
+  return Math.max(MIN_SOFT_MUSCLE_RATE, Math.min(MAX_SOFT_MUSCLE_RATE, value));
 }
 
 /** Resolve authored piston rates with defaults. */
@@ -1134,7 +1274,7 @@ export function pistonRates(muscle: Pick<PhysicsMuscle, 'extendRate' | 'retractR
 
 /**
  * Seed piston rates from the current stroke so a fresh piston starts near
- * telescope jump-stroke behaviour, then remains fully editable.
+ * the former global telescope jump-stroke budget, then remains fully editable.
  */
 export function defaultPistonRatesForStroke(minLength: number, maxLength: number): {
   extendRate: number;
@@ -1145,11 +1285,171 @@ export function defaultPistonRatesForStroke(minLength: number, maxLength: number
   return { extendRate: rate, retractRate: rate };
 }
 
+/**
+ * Soft-muscle |ΔtargetLength| budget for this tick.
+ * `null` = unlimited (legacy / opt-out). Muscle `0` forces unlimited even when
+ * the creature default is set; muscle `> 0` overrides the creature default.
+ */
+export function resolveSoftMuscleMaxDelta(
+  muscle: Pick<PhysicsMuscle, 'softMaxDeltaPerTick' | 'linkKind' | 'minLength' | 'maxLength' | 'strength'>,
+  blueprint?: Pick<CreatureBlueprint, 'softMuscleMaxDeltaPerTick'> | null
+): number | null {
+  if (resolveLinkKind(muscle) !== 'muscle') return null;
+  const local = muscle.softMaxDeltaPerTick;
+  if (typeof local === 'number' && Number.isFinite(local)) {
+    if (local <= 0) return null;
+    return clampSoftMuscleRate(local);
+  }
+  const body = blueprint?.softMuscleMaxDeltaPerTick;
+  if (typeof body === 'number' && Number.isFinite(body) && body > 0) {
+    return clampSoftMuscleRate(body);
+  }
+  return null;
+}
+
+type BlueprintMuscle = Omit<PhysicsMuscle, 'targetLength'>;
+
+function stripMuscleLevers(muscle: BlueprintMuscle): BlueprintMuscle {
+  const {
+    leverBoneA: _a,
+    leverSlotA: _sa,
+    leverBoneB: _b,
+    leverSlotB: _sb,
+    ...rest
+  } = muscle;
+  return rest;
+}
+
+function normalizeSoftMuscleLevers(muscle: BlueprintMuscle): BlueprintMuscle {
+  const next: BlueprintMuscle = { ...muscle };
+  if (typeof muscle.leverBoneA === 'number' && Number.isFinite(muscle.leverBoneA)) {
+    next.leverBoneA = Math.floor(muscle.leverBoneA);
+    next.leverSlotA = isValidLeverSlot(muscle.leverSlotA) ? muscle.leverSlotA : 'mid';
+  } else {
+    delete next.leverBoneA;
+    delete next.leverSlotA;
+  }
+  if (typeof muscle.leverBoneB === 'number' && Number.isFinite(muscle.leverBoneB)) {
+    next.leverBoneB = Math.floor(muscle.leverBoneB);
+    next.leverSlotB = isValidLeverSlot(muscle.leverSlotB) ? muscle.leverSlotB : 'mid';
+  } else {
+    delete next.leverBoneB;
+    delete next.leverSlotB;
+  }
+  return next;
+}
+
+/**
+ * Drop invalid bone-slot levers (wrong kind, self-host, missing bone).
+ * Call after per-muscle normalize so host kinds are resolved.
+ */
+export function sanitizeMuscleLevers(muscles: BlueprintMuscle[]): BlueprintMuscle[] {
+  return muscles.map((muscle, index) => {
+    if (resolveLinkKind(muscle) !== 'muscle' || !muscleHasLever(muscle)) {
+      return resolveLinkKind(muscle) === 'muscle' ? muscle : stripMuscleLevers(muscle);
+    }
+    const next: BlueprintMuscle = { ...muscle };
+    const validHost = (hostIdx: number | undefined): hostIdx is number => {
+      if (hostIdx === undefined || hostIdx === index) return false;
+      const host = muscles[hostIdx];
+      return !!host && isRigidBone(host);
+    };
+    if (!validHost(next.leverBoneA)) {
+      delete next.leverBoneA;
+      delete next.leverSlotA;
+    }
+    if (!validHost(next.leverBoneB)) {
+      delete next.leverBoneB;
+      delete next.leverSlotB;
+    }
+    return next;
+  });
+}
+
+/** Migrate legacy telescope links to piston with stroke-seeded rates. */
+export function normalizeBlueprintMuscle(muscle: BlueprintMuscle): BlueprintMuscle {
+  // Repair inverted stroke bounds from imported / legacy blueprints so every
+  // downstream consumer (rate limits, wave previews, clamps) can assume
+  // minLength ≤ maxLength.
+  if (muscle.minLength > muscle.maxLength) {
+    muscle = {
+      ...muscle,
+      minLength: muscle.maxLength,
+      maxLength: muscle.minLength,
+    };
+  }
+  const kind =
+    muscle.linkKind === 'telescope'
+      ? 'piston'
+      : muscle.linkKind === 'muscle' ||
+          muscle.linkKind === 'bone' ||
+          muscle.linkKind === 'piston'
+        ? muscle.linkKind
+        : undefined;
+  // NOTE: fields that do not apply to a link kind are *deleted*, not written
+  // as explicit `undefined` keys — JSON persistence drops undefined keys, so
+  // explicit-undefined writes made normalized blueprints deep-compare unequal
+  // to their saved round-trips and to authored templates.
+  if (kind === 'piston' || muscle.linkKind === 'telescope') {
+    const seeded = defaultPistonRatesForStroke(muscle.minLength, muscle.maxLength);
+    const next = stripMuscleLevers({
+      ...muscle,
+      linkKind: 'piston',
+      strength: 1.0,
+      extendRate: clampPistonRate(muscle.extendRate ?? seeded.extendRate),
+      retractRate: clampPistonRate(muscle.retractRate ?? seeded.retractRate),
+    });
+    delete next.softMaxDeltaPerTick;
+    return next;
+  }
+  if (kind === 'bone') {
+    const next = stripMuscleLevers({ ...muscle, linkKind: 'bone' });
+    delete next.extendRate;
+    delete next.retractRate;
+    delete next.softMaxDeltaPerTick;
+    return next;
+  }
+  if (kind === 'muscle') {
+    const softCap =
+      typeof muscle.softMaxDeltaPerTick === 'number' && Number.isFinite(muscle.softMaxDeltaPerTick)
+        ? muscle.softMaxDeltaPerTick <= 0
+          ? 0
+          : clampSoftMuscleRate(muscle.softMaxDeltaPerTick)
+        : undefined;
+    const next = normalizeSoftMuscleLevers({ ...muscle, linkKind: 'muscle' });
+    delete next.extendRate;
+    delete next.retractRate;
+    if (softCap !== undefined) next.softMaxDeltaPerTick = softCap;
+    else delete next.softMaxDeltaPerTick;
+    return next;
+  }
+  // Infer without rewriting linkKind when omitted — resolveLinkKind handles it.
+  if (resolveLinkKind(muscle) !== 'muscle') return stripMuscleLevers(muscle);
+  return normalizeSoftMuscleLevers(muscle);
+}
+
+/** Normalize blueprint muscles + optional soft body rate cap. */
+export function normalizeCreatureBlueprint(blueprint: CreatureBlueprint): CreatureBlueprint {
+  const softBody =
+    typeof blueprint.softMuscleMaxDeltaPerTick === 'number' &&
+    Number.isFinite(blueprint.softMuscleMaxDeltaPerTick) &&
+    blueprint.softMuscleMaxDeltaPerTick > 0
+      ? clampSoftMuscleRate(blueprint.softMuscleMaxDeltaPerTick)
+      : undefined;
+  const next: CreatureBlueprint = {
+    ...blueprint,
+    muscles: sanitizeMuscleLevers(blueprint.muscles.map(normalizeBlueprintMuscle)),
+  };
+  if (softBody !== undefined) next.softMuscleMaxDeltaPerTick = softBody;
+  else delete next.softMuscleMaxDeltaPerTick;
+  return next;
+}
+
 export function resolveLinkKind(muscle: LinkKindFields): MuscleLinkKind {
+  if (muscle.linkKind === 'telescope') return 'piston';
   if (
     muscle.linkKind === 'muscle' ||
     muscle.linkKind === 'bone' ||
-    muscle.linkKind === 'telescope' ||
     muscle.linkKind === 'piston'
   ) {
     return muscle.linkKind;
@@ -1157,20 +1457,23 @@ export function resolveLinkKind(muscle: LinkKindFields): MuscleLinkKind {
   // Fixed span is always a solid bone.
   if (muscle.minLength === muscle.maxLength) return 'bone';
   // Legacy near-max strength with a length *range* used to be inferred as a
-  // frozen bone, which silently killed telescopes that lost `linkKind`
-  // (they ship strength 1.0). Treat variable + stiff as a hard prismatic strut.
-  if (muscle.strength >= 0.98) return 'telescope';
+  // frozen bone, which silently killed hard struts that lost `linkKind`
+  // (they ship strength 1.0). Treat variable + stiff as a piston.
+  if (muscle.strength >= 0.98) return 'piston';
   return 'muscle';
 }
 
-/** Fixed-length solid bone (not a telescope/piston). */
+/** Fixed-length solid bone (not a piston). */
 export function isRigidBone(muscle: LinkKindFields): boolean {
   return resolveLinkKind(muscle) === 'bone';
 }
 
-/** Telescoping / prismatic hard strut with global stroke-relative rate. */
-export function isTelescope(muscle: LinkKindFields): boolean {
-  return resolveLinkKind(muscle) === 'telescope';
+/**
+ * @deprecated D150 — telescope collapsed into piston. Always false after
+ * normalize; kept so older call sites compile during migration.
+ */
+export function isTelescope(_muscle: LinkKindFields): boolean {
+  return false;
 }
 
 /** Authorable-rate prismatic hard strut. */
@@ -1178,16 +1481,15 @@ export function isPiston(muscle: LinkKindFields): boolean {
   return resolveLinkKind(muscle) === 'piston';
 }
 
-/** Variable-length hard strut (telescope or piston). */
+/** Variable-length hard strut (piston; legacy telescope normalizes to piston). */
 export function isVariableHardLink(muscle: LinkKindFields): boolean {
-  const kind = resolveLinkKind(muscle);
-  return kind === 'telescope' || kind === 'piston';
+  return resolveLinkKind(muscle) === 'piston';
 }
 
-/** Hard distance constraint (fixed bone, telescope, or piston) for capsule collision. */
+/** Hard distance constraint (fixed bone or piston) for capsule collision. */
 export function isHardLengthConstraint(muscle: LinkKindFields): boolean {
   const kind = resolveLinkKind(muscle);
-  return kind === 'bone' || kind === 'telescope' || kind === 'piston';
+  return kind === 'bone' || kind === 'piston';
 }
 
 export function sameUnorderedNodePair(
@@ -1205,7 +1507,11 @@ export function findParallelSoftMuscle<T extends BrainDrivenFields>(
   muscles: T[]
 ): T | undefined {
   return muscles.find(
-    m => m.id !== hard.id && sameUnorderedNodePair(m, hard) && resolveLinkKind(m) === 'muscle'
+    m =>
+      m.id !== hard.id &&
+      sameUnorderedNodePair(m, hard) &&
+      resolveLinkKind(m) === 'muscle' &&
+      !muscleHasLever(m)
   );
 }
 
@@ -1213,6 +1519,8 @@ export function findParallelHardLink<T extends BrainDrivenFields>(
   soft: T,
   muscles: T[]
 ): T | undefined {
+  // Levered soft muscles are a separate topology — never slave a hard link to them.
+  if (muscleHasLever(soft)) return undefined;
   return muscles.find(
     m => m.id !== soft.id && sameUnorderedNodePair(m, soft) && isHardLengthConstraint(m)
   );
@@ -1228,8 +1536,8 @@ export function isHardLengthSlave<T extends BrainDrivenFields>(
 
 /**
  * Actuator that consumes a genome output. Parachutes stay flexible but inflate
- * passively. Fixed bones never drive. Telescopes / pistons drive unless a
- * parallel soft muscle on the same node pair owns the action.
+ * passively. Fixed bones never drive. Pistons drive unless a parallel soft
+ * muscle on the same node pair owns the action.
  */
 export function isBrainDrivenMuscle(
   muscle: BrainDrivenFields,
@@ -1238,14 +1546,14 @@ export function isBrainDrivenMuscle(
   if (muscle.aeroType === 'parachute') return false;
   const kind = resolveLinkKind(muscle);
   if (kind === 'bone') return false;
-  if (kind === 'telescope' || kind === 'piston') {
+  if (kind === 'piston') {
     if (muscles && findParallelSoftMuscle(muscle, muscles)) return false;
     return true;
   }
   return true;
 }
 
-/** Brain-driven soft muscles and lone telescopes/pistons (excludes bones, parachutes, hard slaves). */
+/** Brain-driven soft muscles and lone pistons (excludes bones, parachutes, hard slaves). */
 export function countFlexibleMuscles(muscles: BrainDrivenFields[]): number {
   return muscles.reduce((n, m) => n + (isBrainDrivenMuscle(m, muscles) ? 1 : 0), 0);
 }
@@ -1257,29 +1565,79 @@ export function countMotorWheels(
   return nodes.reduce((n, node) => n + (node.isMotorWheel ? 1 : 0), 0);
 }
 
-/** Default drive strength when motorPower is unset. */
+/** Default drive strength when motorPower is unset (world px/tick). */
 export const DEFAULT_MOTOR_POWER = 0.45;
-/** Studio slider / blueprint clamp for motor wheel drive strength. */
-export const MAX_MOTOR_POWER = 20.0;
-export const MIN_MOTOR_POWER = 0.1;
+/**
+ * Studio slider / blueprint clamp for motor wheel drive strength.
+ * World units (legacy authoring max was 20).
+ */
+export const MAX_MOTOR_POWER = 2.0;
+export const MIN_MOTOR_POWER = 0.05;
+export const MOTOR_POWER_STEP = 0.05;
 
-/** Default / clamp for wing, paraglider, and parachute area. */
-export const DEFAULT_AERO_AREA = 40;
-export const DEFAULT_PARACHUTE_AREA = 90;
-export const MIN_AERO_AREA = 10;
-export const MAX_AERO_AREA = 160;
+/**
+ * Node mass clamps in world units (legacy 0.5–5.0 × CREATURE_WORLD_SCALE³).
+ * Typical template nodes are ~0.0015.
+ */
+export const MIN_NODE_MASS = 0.0005;
+export const MAX_NODE_MASS = 0.005;
+export const DEFAULT_NODE_MASS = 0.0015;
+export const NODE_MASS_STEP = 0.0001;
 
-/** Studio clamp for muscle / telescope compression & expansion extremes (px). */
-export const MIN_LINK_LENGTH = 10;
-export const MAX_LINK_LENGTH = 1000;
+/** Collider radius clamps in world px (typical nodes 1–2; wheels up to ~5). */
+export const MIN_NODE_RADIUS = 1;
+export const MAX_NODE_RADIUS = 5;
+export const DEFAULT_NODE_RADIUS = 1;
 
-/** Resting length is half of the authored maximum expansion. */
+/** Default / clamp for wing, paraglider, and parachute area (world px²). */
+export const DEFAULT_AERO_AREA = 4;
+export const DEFAULT_PARACHUTE_AREA = 9;
+export const MIN_AERO_AREA = 0.5;
+export const MAX_AERO_AREA = 16;
+export const AERO_AREA_STEP = 0.5;
+
+/** Studio clamp for muscle / telescope compression & expansion extremes (world px). */
+export const MIN_LINK_LENGTH = 1;
+export const MAX_LINK_LENGTH = 50;
+
+/** Default resting length for new muscle / telescope / piston links (50% of max). */
 export function restingLengthFromMaxExpansion(maxLength: number): number {
   return Math.round(maxLength * 0.5);
 }
 
+/** Clamp authored resting length into [minLength, maxLength]. */
+export function clampRestingLength(
+  value: number,
+  minLength: number,
+  maxLength: number,
+): number {
+  const lo = Math.min(minLength, maxLength);
+  const hi = Math.max(minLength, maxLength);
+  return Math.max(lo, Math.min(hi, Math.round(value)));
+}
+
 export function clampLinkLength(value: number): number {
   return Math.max(MIN_LINK_LENGTH, Math.min(MAX_LINK_LENGTH, Math.round(value)));
+}
+
+export function clampNodeMass(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_NODE_MASS;
+  return Math.max(MIN_NODE_MASS, Math.min(MAX_NODE_MASS, value));
+}
+
+export function clampNodeRadius(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_NODE_RADIUS;
+  return Math.max(MIN_NODE_RADIUS, Math.min(MAX_NODE_RADIUS, Math.round(value)));
+}
+
+export function clampMotorPower(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_MOTOR_POWER;
+  return Math.max(MIN_MOTOR_POWER, Math.min(MAX_MOTOR_POWER, value));
+}
+
+export function clampAeroArea(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_AERO_AREA;
+  return Math.max(MIN_AERO_AREA, Math.min(MAX_AERO_AREA, value));
 }
 
 export function effectiveAeroArea(
@@ -1307,6 +1665,78 @@ export const FLIGHT_SENSOR_COUNT = 6;
 export const OBJECT_SENSOR_COUNT = 3;
 /** Max COM→object centre distance (px) that yields a non-zero observation. */
 export const OBJECT_SENSOR_RANGE_PX = 480;
+
+/**
+ * C2 contact summary pack (always present after the object pack):
+ * anyNodeFloor, anyNodeStructure, anyNodeObject, linkStructure, linkObject.
+ * See `contactSensorValues`. Per-node Touch channels also encode class.
+ */
+export const CONTACT_SENSOR_COUNT = 5;
+
+/** Raise a node's contact class without clearing a higher-priority class. */
+export function markNodeContact(node: PhysicsNode, cls: ContactClass): void {
+  if (cls <= CONTACT_NONE) return;
+  const prev = node.contactClass ?? CONTACT_NONE;
+  if (cls > prev) node.contactClass = cls;
+}
+
+/** Encode contact class for one brain input: none=0, floor=1/3, structure=2/3, object=1. */
+export function encodeContactClass(cls: ContactClass): number {
+  if (cls <= CONTACT_NONE) return 0;
+  return cls / CONTACT_OBJECT;
+}
+
+/**
+ * Per-node Touch observation (C2).
+ * Default: encoded contact class. Ablation strips class to floor-or-none from
+ * `isGround` so locomotion still sees support but cannot discriminate surfaces.
+ */
+export function nodeContactSensorValue(
+  node: PhysicsNode,
+  ablateClass = false
+): number {
+  if (ablateClass) {
+    return node.isGround ? encodeContactClass(CONTACT_FLOOR) : 0;
+  }
+  const cls = (node.contactClass ?? CONTACT_NONE) as ContactClass;
+  if (cls > CONTACT_NONE) return encodeContactClass(cls);
+  return node.isGround ? encodeContactClass(CONTACT_FLOOR) : 0;
+}
+
+/**
+ * Bounded contact summary (D147 / C2). Observation only — never applies force.
+ *
+ * Contract:
+ * - Indices 0–2: any node currently in floor / structure / object class.
+ * - Indices 3–4: hard-link capsule structure / object contact this frame.
+ * - Ablation zeros the pack (per-node channels separately fall back to floor).
+ */
+export function contactSensorValues(
+  creature: Pick<
+    Creature,
+    'nodes' | 'linkContactStructure' | 'linkContactObject'
+  >,
+  ablate = false
+): [number, number, number, number, number] {
+  if (ablate) return [0, 0, 0, 0, 0];
+  let floor = 0;
+  let structure = 0;
+  let object = 0;
+  for (const node of creature.nodes) {
+    const cls = node.contactClass ?? CONTACT_NONE;
+    if (cls === CONTACT_FLOOR) floor = 1;
+    else if (cls === CONTACT_STRUCTURE) structure = 1;
+    else if (cls === CONTACT_OBJECT) object = 1;
+    else if (node.isGround) floor = 1;
+  }
+  return [
+    floor,
+    structure,
+    object,
+    creature.linkContactStructure ? 1 : 0,
+    creature.linkContactObject ? 1 : 0,
+  ];
+}
 
 type ObjectSensorSample = Pick<WorldObject, 'type' | 'x' | 'y'>;
 
@@ -1379,12 +1809,15 @@ export function genomeIOForBlueprint(blueprint: CreatureBlueprint): { inputs: nu
     // +5 para: speed, openness, sink, distToRamp, onRamp
     // +6 wing: vx, vy, sinθ, cosθ, ω, clearance (F06)
     // +3 object: relX, relY, proximity (C1 / D145) — always present
+    // +5 contact: node floor/structure/object + link structure/object (C2 / D147)
+    // Per-node Touch slot encodes contact class (same count as pre-C2 binary touch).
     inputs:
       2 +
       3 * blueprint.nodes.length +
       (hasWing ? FLIGHT_SENSOR_COUNT : 0) +
       (hasPara ? 5 : 0) +
-      OBJECT_SENSOR_COUNT,
+      OBJECT_SENSOR_COUNT +
+      CONTACT_SENSOR_COUNT,
     outputs: countFlexibleMuscles(blueprint.muscles) + countMotorWheels(blueprint.nodes),
   };
 }

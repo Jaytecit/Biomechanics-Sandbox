@@ -42,7 +42,7 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
       'Lift a marked foot, plant it further right, then transfer to the other marked foot. Only foot→foot transfers count as alternating steps.',
     reward:
       'Forward body travel (primary) plus a small alternating-step bonus. Needs at least one foot-to-foot transfer and swing-gated steps. Vibration, grounded flicker, and sliding without steps score 0.',
-    tip: 'Amber record line marks the best gait distance. Use Shuffle Right if you want vibration scooting.',
+    tip: 'Amber record line marks the best gait distance. Tiny slide shaping selects rightward early; full score needs alternating steps. Use Shuffle Right for vibration scooting.',
     activeClass: 'border-emerald-600 bg-emerald-50 text-emerald-800',
   },
   [EvolutionGoal.LOCOMOTION_LEFT]: {
@@ -94,8 +94,8 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     category: 'locomotion',
     description: 'Flat sprint rewarding peak burst plus travel.',
     howToAchieve: 'Short powerful strides or motor carts that ramp up fast.',
-    reward: 'Points ≈ peak speed × 45 + distance × 0.35.',
-    tip: 'Thrashing in place scores poorly.',
+    reward: 'Points ≈ peak supported speed × 45 + distance × 0.35.',
+    tip: 'Impulse spikes without supported travel score near zero.',
     activeClass: 'border-sky-600 bg-sky-50 text-sky-800',
   },
   [EvolutionGoal.SPRINT_FINISH]: {
@@ -106,7 +106,7 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     description: 'Race through checkpoints to the finish line. Faster finish = higher score.',
     howToAchieve: 'Build a fast reliable gait and stay upright through the course.',
     reward: 'Points: big bonus for finishing early; partial credit for checkpoints and progress.',
-    tip: 'Works for walkers and Motor Cart alike.',
+    tip: 'Switching goals auto-suggests ~90s generation for tier-0 finish reach.',
     activeClass: 'border-sky-700 bg-sky-100 text-sky-950',
   },
   [EvolutionGoal.ROUGH_TERRAIN_TRAVERSE]: {
@@ -395,6 +395,20 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     tip: 'Stall at the lip fails Run-up — floor the motors and clear the gap. Jump Cart is the speed reference; Proven Glider adds a light sail for Deploy/Glide.',
     activeClass: 'border-indigo-600 bg-indigo-50 text-indigo-950',
   },
+  [EvolutionGoal.CHUTE_DESCENT]: {
+    id: EvolutionGoal.CHUTE_DESCENT,
+    title: 'Chute Descent',
+    shortLabel: 'Chute Drop',
+    category: 'flight',
+    description:
+      'Spawn atop an adjustable tower, deploy your parachute, and land softly on the pad below.',
+    howToAchieve:
+      'Chute Cart: step off the tower platform, let the cup catch air, and bleed speed for a controlled upright landing.',
+    reward:
+      'Points from controlled sink rate during descent plus a soft upright landing bonus. Terminal free-fall and hard impacts score poorly.',
+    tip: 'Raise tower height in Arena modifiers for more air time. Too heavy or too small a chute will slam the pad.',
+    activeClass: 'border-cyan-700 bg-cyan-100 text-cyan-950',
+  },
   [EvolutionGoal.STAIR_CLIMB]: {
     id: EvolutionGoal.STAIR_CLIMB,
     title: 'Stair Climb',
@@ -436,7 +450,7 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     description: 'Enter the marked bay and stay slow while upright.',
     howToAchieve: 'Approach, brake (cut motor drive), hold posture inside the zone.',
     reward: 'Points from frames parked slowly upright + approach credit.',
-    tip: 'Motor Cart: learn to output near-zero drive in the bay.',
+    tip: 'Low wide motor carts qualify via body-scaled posture, not tall upright score.',
     activeClass: 'border-violet-700 bg-violet-100 text-violet-950',
   },
   [EvolutionGoal.HIT_TARGET]: {
@@ -446,8 +460,8 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     category: 'precision',
     description: 'Private ball must touch elevated bullseyes.',
     howToAchieve: 'Carry, kick, or fling the ball into each target circle.',
-    reward: 'Points per contact-caused unique hit + bounded post-hit loft.',
-    tip: 'Each agent has a private ball.',
+    reward: 'Points per contact-caused unique hit + approach shaping + bounded post-hit loft.',
+    tip: 'Approach credit decays as the ball nears each target before the first hit.',
     activeClass: 'border-rose-600 bg-rose-50 text-rose-900',
   },
   [EvolutionGoal.CARRY_BALL]: {
@@ -512,8 +526,9 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     category: 'motor',
     description: 'Pit in the floor. Jump or speed-bridge to the far side.',
     howToAchieve: 'Build speed on approach; Motor Cart may need a hop or high speed.',
-    reward: 'Points from clear bonus + progress; falling in nearly zeroes the score.',
-    tip: 'Recommended: Motor Cart with strong drive.',
+    reward:
+      'Points from clear bonus + approach speed (×10 on clear, ×3 on jump attempt) + how far across the pit the leading edge got (failed jumps still score) + pre-gap jump incentive (all wheels airborne in the 40px window left of the lip) + approach progress. Falling guts approach farming but keeps span / jump / speed credit.',
+    tip: 'Recommended: Motor Cart with strong drive. Build speed, then jump in the last 40px before the pit — faster clears beat slow ones; partial crossings beat driving off the near lip.',
     activeClass: 'border-lime-600 bg-lime-50 text-lime-800',
   },
   [EvolutionGoal.MOTOR_LAUNCH_LAND]: {
@@ -590,21 +605,21 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     title: 'Score a Goal',
     shortLabel: 'Soccer Goal',
     category: 'locomotion',
-    description: 'Get the private ball into the goal mouth between the posts.',
-    howToAchieve: 'Herd or kick the ball right into the net zone.',
-    reward: 'Points from contact-caused goal bonus + bounded contacted ball travel.',
-    tip: 'Touching the posts is fine — the ball must enter the net zone.',
+    description: 'Get the private ball into the open goal mouth between the posts.',
+    howToAchieve: 'Push or chip the ball through the mouth — ground rolls and lobs both count.',
+    reward: 'Points from recent-contact goal bonus + bounded contacted ball travel.',
+    tip: 'Posts are solid to you but not the ball; sustained contact keeps travel credit alive.',
     activeClass: 'border-green-600 bg-green-50 text-green-900',
   },
   [EvolutionGoal.BOWLING_PINS]: {
     id: EvolutionGoal.BOWLING_PINS,
-    title: 'Bowling',
-    shortLabel: 'Bowling',
+    title: 'Pin Smash',
+    shortLabel: 'Pin Smash',
     category: 'sports',
-    description: 'Knock down the triangle of pins (private per agent).',
-    howToAchieve: 'Rush the lane and smash the rack, or roll the body through.',
+    description: 'Knock down the private pin triangle by ramming it with your body.',
+    howToAchieve: 'Drive the whole hull through the rack — each pin must be displaced individually.',
     reward: '40 points per pin down + light approach credit.',
-    tip: 'Motor Cart makes a great bowling ball.',
+    tip: 'There is no ball and no chain reaction — body mass wins.',
     activeClass: 'border-red-700 bg-red-50 text-red-950',
   },
   [EvolutionGoal.DODGEBALL]: {
@@ -612,10 +627,10 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
     title: 'Hazard Dash',
     shortLabel: 'Hazard Dash',
     category: 'locomotion',
-    description: 'Reach the finish while static hazard pads block the side-on lane.',
-    howToAchieve: 'Traverse the physical pads; stay upright and keep moving right.',
+    description: 'Cross ordered static hazard pads with support, then reach the finish.',
+    howToAchieve: 'Traverse each pad in order while supported; no projectiles or dodging required.',
     reward: 'Points from ordered hazard crossings + supported finish + upright new progress.',
-    tip: 'Pack/Focused view helps you watch one agent’s timing.',
+    tip: 'Longer generation lengths help reach the finish at tier 0.',
     activeClass: 'border-fuchsia-700 bg-fuchsia-50 text-fuchsia-950',
   },
   [EvolutionGoal.CUSTOM]: {
@@ -633,6 +648,28 @@ export const GOAL_CATALOG: Record<EvolutionGoal, GoalInfo> = {
 
 export function getGoalInfo(goal: EvolutionGoal): GoalInfo {
   return GOAL_CATALOG[goal];
+}
+
+/** Suggested generation length (seconds) when switching goals — user can override. */
+export function recommendedGenerationDuration(goal: EvolutionGoal): number {
+  switch (goal) {
+    case EvolutionGoal.SPRINT_FINISH:
+    case EvolutionGoal.ROUGH_TERRAIN_TRAVERSE:
+    case EvolutionGoal.DODGEBALL:
+    case EvolutionGoal.MOTOR_SLALOM:
+    case EvolutionGoal.OBSTACLE_CLIMB:
+      return 90;
+    case EvolutionGoal.MOTOR_HURDLES:
+      return 75;
+    case EvolutionGoal.MOTOR_LOOP:
+      return 120;
+    case EvolutionGoal.GLIDE_RANGE:
+    case EvolutionGoal.PARA_RAMP_GLIDE:
+    case EvolutionGoal.CHUTE_DESCENT:
+      return 60;
+    default:
+      return 28;
+  }
 }
 
 export const GOAL_ORDER: EvolutionGoal[] = [
@@ -669,6 +706,7 @@ export const GOAL_ORDER: EvolutionGoal[] = [
   EvolutionGoal.GLIDE_RANGE,
   EvolutionGoal.AERIAL_CROSSING,
   EvolutionGoal.PARA_RAMP_GLIDE,
+  EvolutionGoal.CHUTE_DESCENT,
   // climb
   EvolutionGoal.STAIR_CLIMB,
   EvolutionGoal.OBSTACLE_CLIMB,

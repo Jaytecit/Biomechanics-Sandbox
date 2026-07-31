@@ -7,6 +7,13 @@ import {
 import { SOFT_BODY_PHYSICS_VERSION } from './physicsConstants';
 import { stableHash } from './determinism';
 import { CREATURE_TEMPLATES } from './templates';
+import {
+  CREATURE_WORLD_SCALE,
+  ensureScaledBlueprint,
+  scaleAppearanceRig,
+  scaleCreatureBlueprint,
+} from './creatureScale';
+import { sanitizeAppearanceRig } from './appearanceRig';
 
 export const CREATURE_PACKAGE_SCHEMA = 2;
 export const CREATURE_REPOSITORY_KEY = 'biomech_creature_packages_v2';
@@ -14,6 +21,11 @@ export const LEGACY_CREATURE_KEY = 'biomech_saved_creatures_v1';
 export const STUDIO_DRAFT_KEY = 'biomech_studio_draft_v2';
 export const SKELETON_VISIBLE_MIGRATION_KEY =
   'biomech_collision_skeleton_visible_default_v1';
+export const CREATURE_WORLD_SCALE_MIGRATION_KEY = 'biomech_creature_world_scale_v1';
+/** One-time: strip pre-scale-change cosmetics from persisted saves. */
+export const LEGACY_APPEARANCE_STRIP_MIGRATION_KEY = 'biomech_strip_legacy_appearance_v1';
+
+const FINISHED_MODELS_STORAGE_KEY = 'biomech_finished_models_v1';
 
 export type AppearancePrimitive = {
   id: string;
@@ -248,11 +260,17 @@ function mechanicalFingerprintInput(blueprint: CreatureBlueprint) {
       id: muscle.id, nodeA: muscle.nodeA, nodeB: muscle.nodeB,
       originalLength: muscle.originalLength, minLength: muscle.minLength,
       maxLength: muscle.maxLength, strength: muscle.strength,
-      linkKind: muscle.linkKind ?? null,
+      linkKind: muscle.linkKind === 'telescope' ? 'piston' : (muscle.linkKind ?? null),
       extendRate: muscle.extendRate ?? null,
       retractRate: muscle.retractRate ?? null,
+      softMaxDeltaPerTick: muscle.softMaxDeltaPerTick ?? null,
+      leverBoneA: muscle.leverBoneA ?? null,
+      leverSlotA: muscle.leverSlotA ?? null,
+      leverBoneB: muscle.leverBoneB ?? null,
+      leverSlotB: muscle.leverSlotB ?? null,
       aeroType: muscle.aeroType ?? 'none', aeroArea: muscle.aeroArea ?? null,
     })),
+    softMuscleMaxDeltaPerTick: blueprint.softMuscleMaxDeltaPerTick ?? null,
     relativePositions: blueprint.relativePositions,
     solidSegments: (blueprint.solidSegments ?? [])
       .map(solid => ({
@@ -334,6 +352,105 @@ export function purgeLegacyCreatures(opts: {
   } catch {
     // Malformed legacy records stay untouched; permanent delete still cleared v2.
   }
+}
+
+function scaleStoredPackage(item: CreaturePackage): {
+  item: CreaturePackage;
+  changed: boolean;
+} {
+  const blueprint = ensureScaledBlueprint(item.blueprint);
+  const appearance = item.appearance
+    ? sanitizeAppearanceRig(item.appearance)
+    : undefined;
+  const scaled = blueprint !== item.blueprint;
+  const next: CreaturePackage = {
+    ...item,
+    blueprint,
+    bodyFingerprint: bodyFingerprint(blueprint),
+    appearance,
+  };
+  return { item: next, changed: scaled };
+}
+
+function scaleStoredPackages(packages: CreaturePackage[]): {
+  packages: CreaturePackage[];
+  changed: boolean;
+} {
+  let changed = false;
+  const scaled = packages.map(item => {
+    const result = scaleStoredPackage(item);
+    if (result.changed) changed = true;
+    return result.item;
+  });
+  return { packages: scaled, changed };
+}
+
+/**
+ * One-time migration after CREATURE_WORLD_SCALE: scale legacy blueprints and
+ * strip cosmetic rigs that were authored at the old scale. Future saves keep skin.
+ */
+export function ensureLegacyScaleAndAppearanceMigration(): void {
+  const store = storage();
+  if (!store || store.getItem(LEGACY_APPEARANCE_STRIP_MIGRATION_KEY) === 'done') return;
+
+  try {
+    const parsed = JSON.parse(store.getItem(CREATURE_REPOSITORY_KEY) ?? '[]');
+    if (Array.isArray(parsed)) {
+      const packages = parsed.filter(validPackage).map(item => {
+        const blueprint = ensureScaledBlueprint(item.blueprint);
+        return {
+          ...item,
+          blueprint,
+          bodyFingerprint: bodyFingerprint(blueprint),
+          appearance: undefined,
+        };
+      });
+      writePackages(packages);
+    }
+  } catch {
+    // ignore malformed repository
+  }
+
+  try {
+    const raw = store.getItem(FINISHED_MODELS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const next = parsed.map((m: { blueprint?: CreatureBlueprint; appearance?: AppearanceRig }) => {
+          if (!m?.blueprint || !validBlueprint(m.blueprint)) return m;
+          return {
+            ...m,
+            blueprint: ensureScaledBlueprint(m.blueprint),
+            appearance: undefined,
+          };
+        });
+        store.setItem(FINISHED_MODELS_STORAGE_KEY, JSON.stringify(next));
+      }
+    }
+  } catch {
+    // ignore malformed shelf
+  }
+
+  try {
+    const draftRaw = store.getItem(STUDIO_DRAFT_KEY);
+    if (draftRaw) {
+      const draft = JSON.parse(draftRaw);
+      if (draft?.blueprint && validBlueprint(draft.blueprint)) {
+        store.setItem(
+          STUDIO_DRAFT_KEY,
+          JSON.stringify({
+            ...draft,
+            blueprint: ensureScaledBlueprint(draft.blueprint),
+            appearance: undefined,
+          })
+        );
+      }
+    }
+  } catch {
+    // ignore malformed draft
+  }
+
+  store.setItem(LEGACY_APPEARANCE_STRIP_MIGRATION_KEY, 'done');
 }
 
 function duplicatePackageKey(item: CreaturePackage): string {
@@ -434,7 +551,9 @@ export function createCreaturePackage(
     updatedAt: timestamp,
     displayName: (options.displayName ?? blueprint.name).trim() || 'Untitled Creature',
     blueprint: structuredClone(blueprint),
-    appearance: options.appearance ? structuredClone(options.appearance) : undefined,
+    appearance: options.appearance
+      ? sanitizeAppearanceRig(structuredClone(options.appearance))
+      : undefined,
     controllers: structuredClone(options.controllers ?? []),
     bodyFingerprint: bodyFingerprint(blueprint),
     physicsVersion: SOFT_BODY_PHYSICS_VERSION,
@@ -446,6 +565,7 @@ export function createCreaturePackage(
 export function loadCreaturePackages(): CreaturePackage[] {
   const store = storage();
   if (!store) return [];
+  ensureLegacyScaleAndAppearanceMigration();
   let packages: CreaturePackage[] = [];
   let repositoryChanged = false;
   try {
@@ -494,6 +614,50 @@ export function loadCreaturePackages(): CreaturePackage[] {
     // Storage failures must not prevent the in-memory repository from loading.
   }
 
+  try {
+    if (store.getItem(CREATURE_WORLD_SCALE_MIGRATION_KEY) !== 'done') {
+      packages = packages.map(item => {
+        const blueprint = scaleCreatureBlueprint(item.blueprint, CREATURE_WORLD_SCALE);
+        return {
+          ...item,
+          blueprint,
+          bodyFingerprint: bodyFingerprint(blueprint),
+          appearance: item.appearance
+            ? scaleAppearanceRig(item.appearance, CREATURE_WORLD_SCALE)
+            : item.appearance,
+        };
+      });
+      const draftRaw = store.getItem(STUDIO_DRAFT_KEY);
+      if (draftRaw) {
+        try {
+          const draft = JSON.parse(draftRaw);
+          if (draft?.blueprint && validBlueprint(draft.blueprint)) {
+            store.setItem(
+              STUDIO_DRAFT_KEY,
+              JSON.stringify({
+                ...draft,
+                blueprint: scaleCreatureBlueprint(draft.blueprint, CREATURE_WORLD_SCALE),
+                appearance: draft.appearance
+                  ? scaleAppearanceRig(draft.appearance, CREATURE_WORLD_SCALE)
+                  : draft.appearance,
+              })
+            );
+          }
+        } catch {
+          // Malformed drafts are left untouched.
+        }
+      }
+      store.setItem(CREATURE_WORLD_SCALE_MIGRATION_KEY, 'done');
+      repositoryChanged = true;
+    }
+  } catch {
+    // Storage failures must not prevent the in-memory repository from loading.
+  }
+
+  const scaled = scaleStoredPackages(packages);
+  packages = scaled.packages;
+  if (scaled.changed) repositoryChanged = true;
+
   const normalized = ensureBuiltinCreaturePackages(normalizeCreaturePackages(packages));
   if (
     repositoryChanged ||
@@ -539,6 +703,12 @@ export function savePackageRevision(
     ...prior,
     ...structuredClone(update),
     blueprint,
+    appearance:
+      update.appearance !== undefined
+        ? update.appearance
+          ? sanitizeAppearanceRig(update.appearance)
+          : undefined
+        : prior.appearance,
     revision: prior.revision + 1,
     updatedAt: now(),
     bodyFingerprint: bodyFingerprint(blueprint),
@@ -621,7 +791,7 @@ export function saveStudioDraft(
       schemaVersion: CREATURE_PACKAGE_SCHEMA,
       savedAt: now(),
       blueprint,
-      appearance,
+      appearance: appearance ? sanitizeAppearanceRig(appearance) : undefined,
     }));
     return { ok: true, value: true };
   } catch (error) {
@@ -632,7 +802,14 @@ export function saveStudioDraft(
 export function loadStudioDraft(): { blueprint: CreatureBlueprint; appearance?: AppearanceRig; savedAt: string } | null {
   try {
     const parsed = JSON.parse(storage()?.getItem(STUDIO_DRAFT_KEY) ?? 'null');
-    return parsed && validBlueprint(parsed.blueprint) ? parsed : null;
+    if (!parsed || !validBlueprint(parsed.blueprint)) return null;
+    return {
+      ...parsed,
+      blueprint: ensureScaledBlueprint(parsed.blueprint),
+      appearance: parsed.appearance
+        ? sanitizeAppearanceRig(parsed.appearance)
+        : undefined,
+    };
   } catch {
     return null;
   }

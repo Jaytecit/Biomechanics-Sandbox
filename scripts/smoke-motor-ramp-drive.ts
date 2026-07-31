@@ -24,7 +24,7 @@ import {
   countFlexibleMuscles,
 } from '../src/types';
 
-assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.21.0');
+assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.26.0');
 
 const cart = CREATURE_TEMPLATES.find(t => t.name === 'Motor Cart');
 assert.ok(cart, 'Motor Cart template required');

@@ -26,7 +26,7 @@ import {
   restingLengthFromMaxExpansion,
 } from '../src/types';
 
-assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.21.0');
+assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.26.0');
 
 const FRAMES = 360;
 const SETTLE = 90;
@@ -171,7 +171,7 @@ function runRestHold(
 
 function strutBlueprint(
   name: string,
-  hard: 'bone' | 'telescope' | 'piston' | null,
+  hard: 'bone' | 'piston' | null,
   soft: boolean,
   extras?: Partial<CreatureBlueprint>
 ): CreatureBlueprint {
@@ -313,11 +313,6 @@ runRestHold(
 runRestHold('link:bone-only', strutBlueprint('BoneLeg', 'bone', false), groundedLimits);
 runRestHold('link:soft-only', strutBlueprint('SoftLeg', null, true), walkerLimits);
 runRestHold(
-  'link:telescope-only',
-  strutBlueprint('TelLeg', 'telescope', false),
-  walkerLimits
-);
-runRestHold(
   'link:piston-only',
   strutBlueprint('PistonLeg', 'piston', false),
   walkerLimits
@@ -325,11 +320,6 @@ runRestHold(
 runRestHold(
   'link:bone+soft',
   strutBlueprint('BoneSoftLeg', 'bone', true),
-  walkerLimits
-);
-runRestHold(
-  'link:telescope+soft',
-  strutBlueprint('TelSoftLeg', 'telescope', true),
   walkerLimits
 );
 runRestHold(

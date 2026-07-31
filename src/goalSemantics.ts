@@ -95,7 +95,7 @@ export const GOAL_SEMANTIC_DECISIONS: Record<EvolutionGoal, GoalSemanticDecision
   [EvolutionGoal.PARKING_ZONE]: { ...flat(EvolutionGoal.PARKING_ZONE, 'Whole body supported inside bay while slow and upright'), geometry: 'Marked physical bay' },
   [EvolutionGoal.HIT_TARGET]: { ...flat(EvolutionGoal.HIT_TARGET, 'Private ball physically contacts each bullseye'), geometry: 'Private ball and target circles' },
   [EvolutionGoal.KICK_GOAL]: { ...flat(EvolutionGoal.KICK_GOAL, 'Private ball enters goal mouth after physical contact'), geometry: 'Private ball, solid posts/crossbar, net volume' },
-  [EvolutionGoal.BOWLING_PINS]: { ...flat(EvolutionGoal.BOWLING_PINS, 'Private pins displaced from their supported start poses'), geometry: 'Flat lane and private dynamic pins' },
+  [EvolutionGoal.BOWLING_PINS]: { ...flat(EvolutionGoal.BOWLING_PINS, 'Body-ram private pins off their supported start poses (Pin Smash — not chain-reaction bowling)'), geometry: 'Flat lane and private dynamic pins' },
   [EvolutionGoal.DODGEBALL]: { ...flat(EvolutionGoal.DODGEBALL, 'Cross authored static hazards in course order, then reach the finish with support'), geometry: 'Ordered static hazard pads and finish', failure: 'Missing ordered hazard crossings or unsupported finish', shortcutAudit: 'Camping and final-position bypass earn no section or finish credit; upright shaping accrues only with new rightward progress' },
   [EvolutionGoal.FLIGHT_TIME]: flight(EvolutionGoal.FLIGHT_TIME, 'Best single fully-airborne bout; any ground contact ends the attempt'),
   [EvolutionGoal.FLIGHT_HEIGHT]: flight(EvolutionGoal.FLIGHT_HEIGHT, 'Best sustained aero-climb bout: cruise altitude under a flight gate, with flap-powered post-takeoff climb'),
@@ -107,6 +107,7 @@ export const GOAL_SEMANTIC_DECISIONS: Record<EvolutionGoal, GoalSemanticDecision
   [EvolutionGoal.GLIDE_RANGE]: flight(EvolutionGoal.GLIDE_RANGE, 'Best uninterrupted corridor glide distance; landing ends each attempt'),
   [EvolutionGoal.AERIAL_CROSSING]: flight(EvolutionGoal.AERIAL_CROSSING, 'Airborne pit crossing followed by far-side support; flight shaping is best-single-bout', 'Ramp, pit, landing pad'),
   [EvolutionGoal.PARA_RAMP_GLIDE]: flight(EvolutionGoal.PARA_RAMP_GLIDE, 'Grounded run-up, ramp departure, deploy, then best single airborne glide bout', 'Long runway, ramp, pit, landing pads'),
+  [EvolutionGoal.CHUTE_DESCENT]: flight(EvolutionGoal.CHUTE_DESCENT, 'Tower spawn, parachute-controlled descent, soft upright landing on pad', 'Adjustable tower + landing pad'),
   [EvolutionGoal.CUSTOM]: { ...flat(EvolutionGoal.CUSTOM, 'Only validated physical metric rules contribute'), decision: 'reshape', geometry: 'Selected deterministic environment', shortcutAudit: 'Freeform text never executes or grants a per-frame reward' },
 };
 

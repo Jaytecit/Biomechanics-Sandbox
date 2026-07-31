@@ -11,6 +11,7 @@ import {
   PARA_BLEND_FRAMES,
   PARA_DEPLOY_AIR_GATE,
 } from './physicsConstants';
+import { worldLen } from './creatureScale';
 import {
   Creature,
   EvolutionGoal,
@@ -221,7 +222,7 @@ export function paraRampFitness(
   stage: ParaPilotStage = 'runUp'
 ): number {
   const launchSpeed = Math.min(creature.paraLaunchSpeed ?? 0, 40);
-  const height = Math.min(creature.paraLaunchHeight ?? 0, 140);
+  const height = Math.min(creature.paraLaunchHeight ?? 0, worldLen(140));
   // Glide/air terms come from the best single uninterrupted bout (D113).
   const flyDist = creature.glideBoutDistance ?? 0;
   const openGlide = creature.glideBoutOpenDist ?? 0;
@@ -238,15 +239,25 @@ export function paraRampFitness(
   const backslide = Math.max(0, peakX - creature.currentX);
 
   // Rocket signature: peak much higher than mean cruise → heavy penalty
-  const leapiness = peak > 50 ? Math.max(0, peak / Math.max(18, meanClear) - 1.35) : 0;
+  // Height thresholds are legacy authoring px → worldLen (CREATURE_WORLD_SCALE).
+  const leapPeak = worldLen(50);
+  const loftPeak = worldLen(90);
+  const loftCorridor = worldLen(40);
+  const leapiness =
+    peak > leapPeak
+      ? Math.max(0, peak / Math.max(worldLen(18), meanClear) - 1.35)
+      : 0;
   const leapPenalty = leapiness * peak * 0.85;
   // Pure loft without forward corridor is worthless
   const loftWithoutGlide =
-    peak > 90 && corridorDist < 40 ? (peak - 90) * 1.2 + backslide * 0.8 : backslide * 0.55;
+    peak > loftPeak && corridorDist < loftCorridor
+      ? (peak - loftPeak) * 1.2 + backslide * 0.8
+      : backslide * 0.55;
 
   const speedScore = launchSpeed * 8;
   // Prefer mid-height cruise, not max loft
-  const cruiseHeight = Math.min(meanClear, 120) * 1.1 + Math.min(height, 100) * 0.35;
+  const cruiseHeight =
+    Math.min(meanClear, worldLen(120)) * 1.1 + Math.min(height, worldLen(100)) * 0.35;
   const distScore = openGlide * 2.8 + flyDist * 1.1;
   const corridorBonus =
     corridor * 5.5 +
@@ -256,7 +267,7 @@ export function paraRampFitness(
     deploy >= 12 ? 50 + (Math.min(deploy, 40) - 12) * 3.5 : deploy * 1.2;
   const clearBonus = clear * (50 + Math.min(200, corridorDist * 1.4));
   const pitMul = fell ? 0.1 : 1;
-  const forwardGate = Math.min(1, (openGlide + corridorDist) / 80);
+  const forwardGate = Math.min(1, (openGlide + corridorDist) / worldLen(80));
 
   const activeAirScore = ((): number => {
     if (stage === 'runUp') {
@@ -282,14 +293,19 @@ export function paraRampFitness(
   const airScore = Math.max(creature.paraAirBestBoutScore ?? 0, activeAirScore);
 
   if (stage === 'runUp') {
-    // Lock-in = clear the pit with a fast reefed jump. Speed is the shaping signal.
+    // Lock-in = clear the pit with a fast reefed jump. Lip speed dominates.
     const clearScore = clear * (280 + Math.min(launchSpeed, 35) * 8);
+    const takeoffBonus =
+      launchSpeed >= 12
+        ? 80 + Math.min(launchSpeed, 45) * 6
+        : Math.max(0, launchSpeed - 6) * 4;
     const landBonus =
-      clear && !fell && creature.nodes.some(n => n.isGround) ? 100 : 0;
-    const approach = Math.min(Math.max(0, creature.currentX - creature.startX), 2000) * 0.03;
+      clear && !fell && creature.nodes.some(n => n.isGround) ? 35 : 0;
+    const approach = Math.min(Math.max(0, creature.currentX - creature.startX), 2000) * 0.015;
     return Math.max(
       0,
-      (speedScore * 2.2 + clearScore + landBonus + approach + airScore) * pitMul
+      (speedScore * 3.2 + clearScore + takeoffBonus + landBonus + approach + airScore) *
+        pitMul
     );
   }
   if (stage === 'deploy') {
@@ -318,23 +334,32 @@ export function paraRampAirBoutScore(
   const peak = creature.glideBoutPeakClearance ?? 0;
   const air = creature.glideBoutFrames ?? 0;
   const meanClear = air > 0 ? (creature.glideBoutHeightIntegral ?? 0) / air : 0;
-  const height = Math.min(creature.paraLaunchHeight ?? 0, 140);
+  const height = Math.min(creature.paraLaunchHeight ?? 0, worldLen(140));
   const peakX = creature.paraPeakX ?? creature.currentX;
   const backslide = Math.max(0, peakX - creature.currentX);
   const clear = creature.gapCleared ? 1 : 0;
 
-  const leapiness = peak > 50 ? Math.max(0, peak / Math.max(18, meanClear) - 1.35) : 0;
+  const leapPeak = worldLen(50);
+  const loftPeak = worldLen(90);
+  const loftCorridor = worldLen(40);
+  const leapiness =
+    peak > leapPeak
+      ? Math.max(0, peak / Math.max(worldLen(18), meanClear) - 1.35)
+      : 0;
   const leapPenalty = leapiness * peak * 0.85;
   const loftWithoutGlide =
-    peak > 90 && corridorDist < 40 ? (peak - 90) * 1.2 + backslide * 0.8 : backslide * 0.55;
-  const cruiseHeight = Math.min(meanClear, 120) * 1.1 + Math.min(height, 100) * 0.35;
+    peak > loftPeak && corridorDist < loftCorridor
+      ? (peak - loftPeak) * 1.2 + backslide * 0.8
+      : backslide * 0.55;
+  const cruiseHeight =
+    Math.min(meanClear, worldLen(120)) * 1.1 + Math.min(height, worldLen(100)) * 0.35;
   const distScore = openGlide * 2.8 + flyDist * 1.1;
   const corridorBonus =
     corridor * 5.5 +
     corridorDist * 4.5 +
     Math.pow(Math.max(0, streak - 40), 1.15) * 0.35;
   const clearBonus = clear * (50 + Math.min(200, corridorDist * 1.4));
-  const forwardGate = Math.min(1, (openGlide + corridorDist) / 80);
+  const forwardGate = Math.min(1, (openGlide + corridorDist) / worldLen(80));
 
   if (stage === 'runUp') return Math.min(flyDist, 40) * 0.05;
   if (stage === 'deploy') {

@@ -1,9 +1,10 @@
 # COMPLETED.md — Soft-body Sandbox shipped work
 
-**Updated:** 2026-07-28  
-**Physics:** `4.21.0`  
+**Updated:** 2026-07-31  
+**Physics:** `4.24.0`  
 **Active goals:** 49 (+ one retired legacy enum: Motor Bridge)  
-**Detail log:** `DECISIONS.md` (D055–D144). Closed flight records: `FLIGHT_*.md`.
+**Detail log:** `DECISIONS.md` (D055–D150). Closed flight records: `FLIGHT_*.md`.
+**Ideas program:** `IDEAS_DEVELOPMENT_PLAN.md` (Phase 22A shipped).
 
 ---
 
@@ -16,8 +17,9 @@
 - Arena Championship app (events, heats, podiums, leaderboards) under
   `Arena Championship/`.
 - Zones (Flying / Motor / Walking / Jumping / Free) with launch eligibility.
-- Studio: bones, soft muscles, telescopes, pistons, solid segments, feet,
-  90° hinge stops, biological skin, drawers clear of canvas.
+- Studio: bones, soft muscles, pistons (telescope collapsed D150), solid segments,
+  feet, 90° hinge stops, soft-muscle stroke-rate caps, biological skin, drawers
+  clear of canvas.
 - Models hub: shelf + untrained picker, continue-training transfer, permanent
   delete, Best Ever ledger (session + shelf + generation length).
 - Immersive fullscreen default; viewport-contained builders; Run-tab performance
@@ -29,6 +31,11 @@
 
 | Version | Decision | What shipped |
 |---|---|---|
+| 4.24.0 | D150 | Soft-muscle command rate caps (body + per-muscle); telescope→piston |
+| 4.23.1 | D149 | Post-scale brain obs divisors + leftover legacy-px reward/escalation gates |
+| 4.23.0 | D147 | Contact/touch sensor: per-node class + summary pack (floor/structure/object) |
+| 4.22.5 | D146 | Studio world-scale clamps (mass/links/motors/pistons/aero); motorPower scale |
+| 4.22.0 | D145 | Object-relative sensor pack (relX/relY/proximity, range 480px) |
 | 4.21.0 | D144 | Wheeled solid floor plant: wheel-aware depth; always lift penetration; reseat flat-only |
 | 4.20.0 | D143 | Bird-like symmetrical flap lift + Stay Aloft / Height sym bonus |
 | 4.19.0 | D142 | Soft actuation + aero coupling; motor chassis share; flat replant gated off ramps |
@@ -48,6 +55,12 @@ Aero stack (D070–D076, D114): wing / paraglider / parachute projected-area aer
 downstroke-only wing lift; soft stall; Cl/Cd table; Baseline Glider + flapper
 proofs.
 
+Object sensing (D145 / C1): always-on range-limited bearing/proximity to the
+goal's private ball/hoop/box; observation only; pre-4.22.0 controllers stale.
+
+Contact sensing (D147 / C2): per-node Touch encodes contact class; fixed summary
+pack for node + hard-link classes; observation only; pre-4.23.0 controllers stale.
+
 ---
 
 ## Goals & rewards
@@ -61,6 +74,10 @@ proofs.
   pass held-out variants.
 - Flight Height aero-climb bout (D110); Jump & Land / Launch & Land / Landspeed
   and mirrored flight/jump catalog (D063–D079 era).
+- **D148 / Phase 22A:** Live built-in reward recipes for SPEED + JUMP_SPEED
+  (`builtInRewardCoeffs.ts`); shared by fitness + breakdown; Elite Rewards
+  sliders + reset + custom badge; recipe fingerprint on shelf / Best Ever lanes.
+  Evidence: `scripts/smoke-builtin-reward-recipe.ts`, `scripts/smoke-speed.ts`.
 
 ---
 
@@ -87,11 +104,17 @@ Recovery/test plans are closed records, not an open implementation gate.
 ```
 npx tsc --noEmit
 npm run build
+npx tsx scripts/smoke-object-sensor.ts
+npx tsx scripts/prove-object-sensor.ts
+npx tsx scripts/smoke-contact-sensor.ts
+npx tsx scripts/prove-contact-sensor.ts
 npx tsx scripts/smoke-solid-segments.ts
 npx tsx scripts/smoke-motor-ramp-drive.ts
 npx tsx scripts/smoke-aero.ts
 npx tsx scripts/smoke-physics-invariants.ts
 npx tsx scripts/smoke-walk-jump-hop.ts
+npx tsx scripts/smoke-speed.ts
+npx tsx scripts/smoke-builtin-reward-recipe.ts
 npx tsx scripts/prove-paraglide.ts
 npx tsx scripts/prove-para-ramp.ts
 npx tsx scripts/prove-flapper.ts

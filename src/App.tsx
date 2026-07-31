@@ -41,6 +41,12 @@ import { evaluateChallengeConstraints } from './challengeConstraints';
 import { formatBestEver, formatLiveLeader } from './formatGoal';
 import { getGoalInfo, recommendedGenerationDuration } from './goalCatalog';
 import {
+  BuiltInRewardRecipe,
+  cloneBuiltInRewardRecipe,
+  isDefaultRewardRecipe,
+  rewardRecipeFingerprint,
+} from './builtInRewardCoeffs';
+import {
   calculateRewardBreakdown,
   RewardBreakdown,
 } from './rewardBreakdown';
@@ -73,6 +79,7 @@ import { SandboxMenu } from './components/SandboxMenu';
 import { CapabilityPanel } from './components/CapabilityPanel';
 import { ArenaModifiersPanel } from './components/ArenaModifiersPanel';
 import { EnvironmentStudio } from './components/EnvironmentStudio';
+import { CustomEnvironmentsPanel } from './components/CustomEnvironmentsPanel';
 import { PerformanceDiagnosticsPanel } from './components/PerformanceDiagnosticsPanel';
 import { EnvironmentPackage, EnvironmentTheme } from './environments';
 import {
@@ -151,6 +158,7 @@ import {
   Maximize2,
   Minimize2,
   Boxes,
+  Map,
 } from 'lucide-react';
 
 const DEFAULT_CONFIG: SimulationConfig = {
@@ -177,9 +185,9 @@ const AUTO_THROTTLE_BUDGET_LOW_MS = 8;
 const AUTO_THROTTLE_MIN_SCALE = 0.08;
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'models' | 'simulation' | 'studio' | 'environment'>(
-    'simulation'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'models' | 'simulation' | 'studio' | 'environment' | 'custom'
+  >('simulation');
   const [activeZone, setActiveZone] = useState<ArenaZoneId>(() => loadStoredZone());
   // Start in the immersive workspace: it keeps the arena, controls, and live
   // telemetry visible together. Escape and the toggle still restore the page view.
@@ -257,6 +265,9 @@ export default function App() {
   const [activeChallengeId, setActiveChallengeId] = useState<string | null>(null);
   const [finishedModels, setFinishedModels] = useState<FinishedModel[]>(() => loadFinishedModels());
   const [environmentTheme, setEnvironmentTheme] = useState<EnvironmentTheme>('meadow');
+  const [activeCustomEnvironment, setActiveCustomEnvironment] = useState<EnvironmentPackage | null>(null);
+  const [customEnvironmentsRefreshToken, setCustomEnvironmentsRefreshToken] = useState(0);
+  const [environmentStudioLoadRequest, setEnvironmentStudioLoadRequest] = useState<EnvironmentPackage | null>(null);
   /** When set, Freeze suggests a transfer name (source → current goal). */
   const [transferSourceName, setTransferSourceName] = useState<string | null>(null);
   const [secretRevealQueue, setSecretRevealQueue] = useState<SecretGoalDiscovery[]>([]);
@@ -303,19 +314,19 @@ export default function App() {
    * Cleared when the user deliberately changes zone, body, goal, or resets.
    */
   const protectSeededPopulationRef = useRef(false);
+  const customEnvironmentLockRef = useRef(false);
+  const activeCustomEnvironmentRef = useRef<EnvironmentPackage | null>(null);
+  activeCustomEnvironmentRef.current = activeCustomEnvironment;
   configRef.current = config;
   worldObjectsRef.current = worldObjects;
   obstaclesRef.current = obstacles;
   selectedCreatureIdRef.current = selectedCreatureId;
-  currentModelScoreKeyRef.current = `${config.goal}::${bodyFingerprint(selectedTemplate)}`;
+  currentModelScoreKeyRef.current = activeCustomEnvironment
+    ? `custom:${activeCustomEnvironment.id}:${config.goal}::${bodyFingerprint(selectedTemplate)}`
+    : `${config.goal}::${bodyFingerprint(selectedTemplate)}`;
   generationHistoryLengthRef.current = generationHistory.length;
   bestEverFitnessRef.current = bestEverFitness;
   bestEverGenerationDurationRef.current = bestEverGenerationDuration;
-
-  const openSimulation = useCallback(() => {
-    setActiveTab('simulation');
-    setIsFullscreen(true);
-  }, []);
 
   const resetWorld = useCallback((goal: EvolutionGoal, arena: SimulationConfig['arena']) => {
     const obs = generateObstacles(goal, arena);
@@ -331,8 +342,9 @@ export default function App() {
    * an all-time Best Ever — only loads the record for the active goal.
    */
   const applyPersistedBestEverBaseline = useCallback((goal: EvolutionGoal) => {
-    const shelf = findBestModelForGoal(goal);
-    const ledger = getPersistedGoalBestEver(goal);
+    const fingerprint = rewardRecipeFingerprint(configRef.current.rewardRecipe);
+    const shelf = findBestModelForGoal(goal, undefined, fingerprint);
+    const ledger = getPersistedGoalBestEver(goal, fingerprint);
     const shelfBest = shelf?.fitness ?? 0;
     const ledgerBest = ledger?.fitness ?? 0;
     const best = Math.max(shelfBest, ledgerBest);
@@ -355,11 +367,26 @@ export default function App() {
       modelName?: string
     ) => {
       if (!Number.isFinite(fitness) || fitness <= 0) return;
-      const entry = promoteGoalBestEver(goal, {
-        fitness,
-        modelName: modelName || 'This run',
-        generationDurationSec,
-      });
+      if (customEnvironmentLockRef.current) {
+        const next = Math.max(fitness, bestEverFitnessRef.current);
+        if (next > bestEverFitnessRef.current) {
+          bestEverFitnessRef.current = next;
+          bestEverGenerationDurationRef.current = generationDurationSec;
+          setBestEverFitness(next);
+          setBestEverGenerationDuration(generationDurationSec);
+        }
+        return;
+      }
+      const fingerprint = rewardRecipeFingerprint(configRef.current.rewardRecipe);
+      const entry = promoteGoalBestEver(
+        goal,
+        {
+          fitness,
+          modelName: modelName || 'This run',
+          generationDurationSec,
+        },
+        fingerprint
+      );
       const next = Math.max(fitness, entry?.fitness ?? 0, bestEverFitnessRef.current);
       if (next > bestEverFitnessRef.current) {
         const dur =
@@ -375,10 +402,39 @@ export default function App() {
     []
   );
 
+  const handleRewardRecipeChange = useCallback(
+    (recipe: BuiltInRewardRecipe | undefined) => {
+      setConfig(prev => {
+        const nextRecipe =
+          recipe === undefined || isDefaultRewardRecipe(recipe)
+            ? undefined
+            : cloneBuiltInRewardRecipe(recipe);
+        const next = { ...prev, rewardRecipe: nextRecipe };
+        configRef.current = next;
+        return next;
+      });
+      // Drop gen snapshot so the overlay recomputes under the new recipe.
+      lastGenRewardsRef.current = null;
+      setLastGenRewards(null);
+      setRewardBaseline(null);
+      // Re-baseline Best Ever for the new recipe lane.
+      applyPersistedBestEverBaseline(configRef.current.goal);
+    },
+    [applyPersistedBestEverBaseline]
+  );
+
+  const spawnPointForSession = useCallback(() => {
+    if (customEnvironmentLockRef.current && activeCustomEnvironmentRef.current) {
+      return activeCustomEnvironmentRef.current.spawn;
+    }
+    return { x: 100, y: GROUND_Y - 50 };
+  }, []);
+
   const initializePopulation = useCallback((template: CreatureBlueprint, popSize: number, resetHistory: boolean) => {
     const newCreatures: Creature[] = [];
     const { inputs: inputsCount, outputs: outputsCount } = genomeIOForBlueprint(template);
     const difficulty = configRef.current.arena.difficulty ?? 1;
+    const spawn = spawnPointForSession();
 
     for (let i = 0; i < popSize; i++) {
       const genome = createBaseGenome(inputsCount, outputsCount);
@@ -391,10 +447,11 @@ export default function App() {
           genome,
           paraPilot: usePara ? createParaPilot(genome, cloneGenome) : undefined,
         },
-        100,
-        GROUND_Y - 50,
+        spawn.x,
+        spawn.y,
         configRef.current.goal,
-        difficulty
+        difficulty,
+        configRef.current.arena
       );
       newCreatures.push(creature);
     }
@@ -405,7 +462,9 @@ export default function App() {
     setElapsedSeconds(0);
     elapsedSecondsRef.current = 0;
     simTimeRef.current = 0;
-    resetWorld(configRef.current.goal, configRef.current.arena);
+    if (!customEnvironmentLockRef.current) {
+      resetWorld(configRef.current.goal, configRef.current.arena);
+    }
 
     if (resetHistory) {
       setGenerationHistory([]);
@@ -413,13 +472,85 @@ export default function App() {
       lastGenRewardsRef.current = null;
       setLastGenRewards(null);
       setCurrentGen(1);
-      applyPersistedBestEverBaseline(configRef.current.goal);
+      if (!customEnvironmentLockRef.current) {
+        applyPersistedBestEverBaseline(configRef.current.goal);
+      }
       setBestEverDistance(0);
       setBestEverPeakSpeed(0);
       setBestEverPeakLandSpeed(0);
       setBestEverJumpHeight(0);
     }
-  }, [resetWorld, applyPersistedBestEverBaseline]);
+  }, [resetWorld, applyPersistedBestEverBaseline, spawnPointForSession]);
+
+  const leaveCustomEnvironment = useCallback(() => {
+    customEnvironmentLockRef.current = false;
+    activeCustomEnvironmentRef.current = null;
+    setActiveCustomEnvironment(null);
+    resetWorld(configRef.current.goal, configRef.current.arena);
+    applyPersistedBestEverBaseline(configRef.current.goal);
+    if (!protectSeededPopulationRef.current) {
+      initializePopulation(selectedTemplate, configRef.current.populationSize, false);
+    }
+  }, [resetWorld, applyPersistedBestEverBaseline, initializePopulation, selectedTemplate]);
+
+  const applyCustomEnvironment = useCallback(
+    (environment: EnvironmentPackage) => {
+      protectSeededPopulationRef.current = false;
+      customEnvironmentLockRef.current = true;
+      const env = structuredClone(environment);
+      activeCustomEnvironmentRef.current = env;
+      setActiveCustomEnvironment(env);
+      setActiveTab('custom');
+      setIsFullscreen(true);
+      setEnvironmentTheme(env.theme);
+      const nextGoal = env.goal ?? configRef.current.goal;
+      if (env.goal) {
+        setConfig(current => ({ ...current, goal: env.goal! }));
+      }
+      const copied = structuredClone(env.obstacles);
+      setObstacles(copied);
+      obstaclesRef.current = copied;
+      const objects = env.worldObjects.length
+        ? structuredClone(env.worldObjects)
+        : createWorldObjects(nextGoal, configRef.current.arena.difficulty);
+      setWorldObjects(objects);
+      worldObjectsRef.current = objects;
+      setBestEverFitness(0);
+      bestEverFitnessRef.current = 0;
+      setBestEverGenerationDuration(0);
+      bestEverGenerationDurationRef.current = 0;
+      setBestEverDistance(0);
+      setBestEverPeakSpeed(0);
+      setBestEverPeakLandSpeed(0);
+      setBestEverJumpHeight(0);
+      setActiveChallengeId(null);
+      initializePopulation(selectedTemplate, configRef.current.populationSize, true);
+    },
+    [initializePopulation, selectedTemplate]
+  );
+
+  const openSimulation = useCallback(() => {
+    if (customEnvironmentLockRef.current) {
+      leaveCustomEnvironment();
+    }
+    setActiveTab('simulation');
+    setIsFullscreen(true);
+  }, [leaveCustomEnvironment]);
+
+  const handleSelectTab = useCallback(
+    (tab: 'models' | 'simulation' | 'studio' | 'environment' | 'custom') => {
+      if (activeTab === 'custom' && tab !== 'custom') {
+        leaveCustomEnvironment();
+      }
+      if (tab === 'simulation') {
+        setIsFullscreen(true);
+      } else if (tab !== 'custom') {
+        setIsFullscreen(false);
+      }
+      setActiveTab(tab);
+    },
+    [activeTab, leaveCustomEnvironment]
+  );
 
   // Escape exits immersive fullscreen layout; lock page scroll while active
   useEffect(() => {
@@ -471,6 +602,11 @@ export default function App() {
 
   // Rebuild when goal / body / population size change
   useEffect(() => {
+    if (customEnvironmentLockRef.current) {
+      if (protectSeededPopulationRef.current) return;
+      initializePopulation(selectedTemplate, config.populationSize, false);
+      return;
+    }
     resetWorld(config.goal, config.arena);
     if (protectSeededPopulationRef.current) return;
     initializePopulation(selectedTemplate, config.populationSize, false);
@@ -488,7 +624,14 @@ export default function App() {
 
   // Goal change: load that goal's permanent record (never wipe all-time scores).
   useEffect(() => {
-    applyPersistedBestEverBaseline(config.goal);
+    if (customEnvironmentLockRef.current) {
+      setBestEverFitness(0);
+      bestEverFitnessRef.current = 0;
+      setBestEverGenerationDuration(0);
+      bestEverGenerationDurationRef.current = 0;
+    } else {
+      applyPersistedBestEverBaseline(config.goal);
+    }
     setBestEverDistance(0);
     setBestEverPeakSpeed(0);
     setBestEverPeakLandSpeed(0);
@@ -501,6 +644,7 @@ export default function App() {
 
   // Refresh ice / ramp / pit / gap geometry without wiping generation progress
   useEffect(() => {
+    if (customEnvironmentLockRef.current) return;
     const obs = generateObstacles(config.goal, config.arena);
     setObstacles(obs);
     obstaclesRef.current = obs;
@@ -765,16 +909,18 @@ export default function App() {
 
     // Escalate goal limits when the best agent beats the current bar/gap/finish
     let arenaForNext = config.arena;
-    const escalation = escalateLimitsAfterGeneration(config.goal, config.arena, sorted[0]);
-    if (escalation.arenaPatch) {
-      arenaForNext = { ...config.arena, ...escalation.arenaPatch };
-      setConfig(prev => ({
-        ...prev,
-        arena: arenaForNext,
-      }));
-      const refreshed = generateObstacles(config.goal, arenaForNext);
-      setObstacles(refreshed);
-      obstaclesRef.current = refreshed;
+    if (!customEnvironmentLockRef.current) {
+      const escalation = escalateLimitsAfterGeneration(config.goal, config.arena, sorted[0]);
+      if (escalation.arenaPatch) {
+        arenaForNext = { ...config.arena, ...escalation.arenaPatch };
+        setConfig(prev => ({
+          ...prev,
+          arena: arenaForNext,
+        }));
+        const refreshed = generateObstacles(config.goal, arenaForNext);
+        setObstacles(refreshed);
+        obstaclesRef.current = refreshed;
+      }
     }
 
     // Record generation history
@@ -795,7 +941,8 @@ export default function App() {
         sorted[0].privateWorld ?? [],
         config.customGoal,
         obstaclesRef.current,
-        config.paraPilotStage
+        config.paraPilotStage,
+        config.rewardRecipe
       );
       setRewardBaseline(lastGenRewardsRef.current);
       lastGenRewardsRef.current = snapshot;
@@ -817,6 +964,7 @@ export default function App() {
     const difficulty = arenaForNext.difficulty ?? 1;
     const paraMode = isParaRampGoal(config.goal);
     const stage: ParaPilotStage = config.paraPilotStage ?? 'runUp';
+    const spawn = spawnPointForSession();
 
     for (let i = 0; i < eliteCount; i++) {
       const parent = sorted[i];
@@ -834,10 +982,11 @@ export default function App() {
           genome: elitePack.genome,
           paraPilot: elitePack.paraPilot,
         },
-        100,
-        GROUND_Y - 50,
+        spawn.x,
+        spawn.y,
         config.goal,
-        difficulty
+        difficulty,
+        config.arena
       );
       nextPopulation.push(elite);
     }
@@ -898,10 +1047,11 @@ export default function App() {
           genome: childGenome,
           paraPilot: childPilot,
         },
-        100,
-        GROUND_Y - 50,
+        spawn.x,
+        spawn.y,
         config.goal,
-        difficulty
+        difficulty,
+        config.arena
       );
       nextPopulation.push(child);
     }
@@ -930,20 +1080,18 @@ export default function App() {
     setCreatures(nextPopulation);
     creaturesRef.current = nextPopulation;
 
-    // Default focus to the new leader
-    const newLeader = nextPopulation.reduce(
-      (best, current) => (current.fitness > best.fitness ? current : best),
-      nextPopulation[0]
-    );
-    setSelectedCreatureId(newLeader.id);
+    // Focus the elite carrying the previous generation's best genome
+    setSelectedCreatureId(nextPopulation[0].id);
 
     setCurrentGen(prev => prev + 1);
     setElapsedSeconds(0);
     elapsedSecondsRef.current = 0;
     simTimeRef.current = 0;
-    resetWorld(config.goal, config.arena);
+    if (!customEnvironmentLockRef.current) {
+      resetWorld(config.goal, config.arena);
+    }
     if (measureBreed) recordBreed(performance.now() - breedStartedAt);
-  }, [currentGen, config, selectedTemplate, bestEverDistance, bestEverPeakSpeed, bestEverPeakLandSpeed, bestEverJumpHeight, resetWorld, raiseBestEverIfBeaten]);
+  }, [currentGen, config, selectedTemplate, bestEverDistance, bestEverPeakSpeed, bestEverPeakLandSpeed, bestEverJumpHeight, resetWorld, raiseBestEverIfBeaten, spawnPointForSession]);
 
   // Fractional-speed accumulator so sub-1x speeds (e.g. 0.05x) still advance.
   const speedAccumulatorRef = useRef<number>(0);
@@ -985,36 +1133,38 @@ export default function App() {
 
       for (let s = 0; s < steps; s++) {
         simTimeRef.current += 1;
-        if (cfg.goal === EvolutionGoal.STAIR_CLIMB) {
-          const furthestX = Math.max(...currentPop.map(c => c.currentX), 100);
-          extendEndlessStairs(obs, furthestX, cfg.arena.difficulty ?? 1);
-        }
-        if (
-          cfg.goal === EvolutionGoal.MOTOR_LOOP ||
-          cfg.arena.terrainEnabled ||
-          hasTerrain(obs)
-        ) {
-          const packLeftX = Math.min(
-            ...currentPop.map(c => {
-              const hoop = c.privateWorld?.find(o => o.type === 'hoop');
-              return hoop ? hoop.x : c.currentX;
-            }),
-            100
-          );
-          const packRightX = Math.max(
-            ...currentPop.map(c => {
-              const hoop = c.privateWorld?.find(o => o.type === 'hoop');
-              return hoop ? hoop.x : c.currentX;
-            }),
-            100
-          );
-          extendEndlessTerrain(
-            obs,
-            { leftX: packLeftX, rightX: packRightX },
-            cfg.arena.terrainSeed ?? 42,
-            cfg.arena.difficulty ?? 1,
-            !!cfg.arena.terrainObstaclesEnabled
-          );
+        if (!customEnvironmentLockRef.current) {
+          if (cfg.goal === EvolutionGoal.STAIR_CLIMB) {
+            const furthestX = Math.max(...currentPop.map(c => c.currentX), 100);
+            extendEndlessStairs(obs, furthestX, cfg.arena.difficulty ?? 1);
+          }
+          if (
+            cfg.goal === EvolutionGoal.MOTOR_LOOP ||
+            cfg.arena.terrainEnabled ||
+            hasTerrain(obs)
+          ) {
+            const packLeftX = Math.min(
+              ...currentPop.map(c => {
+                const hoop = c.privateWorld?.find(o => o.type === 'hoop');
+                return hoop ? hoop.x : c.currentX;
+              }),
+              100
+            );
+            const packRightX = Math.max(
+              ...currentPop.map(c => {
+                const hoop = c.privateWorld?.find(o => o.type === 'hoop');
+                return hoop ? hoop.x : c.currentX;
+              }),
+              100
+            );
+            extendEndlessTerrain(
+              obs,
+              { leftX: packLeftX, rightX: packRightX },
+              cfg.arena.terrainSeed ?? 42,
+              cfg.arena.difficulty ?? 1,
+              !!cfg.arena.terrainObstaclesEnabled
+            );
+          }
         }
         // Shared arena geometry. Ball/crate are per-creature.
         updateWorldState([], obs, simTimeRef.current, cfg);
@@ -1240,16 +1390,16 @@ export default function App() {
           challenge.arena?.rampWidthPx ??
           configRef.current.arena.rampWidthPx ??
           BASE_RAMP_WIDTH,
-        terrainEnabled:
-          challenge.arena?.terrainEnabled ?? configRef.current.arena.terrainEnabled,
-        terrainObstaclesEnabled:
-          challenge.arena?.terrainObstaclesEnabled ??
-          configRef.current.arena.terrainObstaclesEnabled,
-        iceEnabled: challenge.arena?.iceEnabled ?? configRef.current.arena.iceEnabled,
-        windEnabled: challenge.arena?.windEnabled ?? configRef.current.arena.windEnabled,
+        // Challenges run on their authored course. Modifier toggles left on
+        // from the user's previous sandbox session must not leak extra
+        // terrain / ice / wind / pit / ramp geometry into the challenge.
+        terrainEnabled: challenge.arena?.terrainEnabled ?? false,
+        terrainObstaclesEnabled: challenge.arena?.terrainObstaclesEnabled ?? false,
+        iceEnabled: challenge.arena?.iceEnabled ?? false,
+        windEnabled: challenge.arena?.windEnabled ?? false,
         windStrength: challenge.arena?.windStrength ?? configRef.current.arena.windStrength,
-        pitEnabled: challenge.arena?.pitEnabled ?? configRef.current.arena.pitEnabled,
-        rampEnabled: challenge.arena?.rampEnabled ?? configRef.current.arena.rampEnabled,
+        pitEnabled: challenge.arena?.pitEnabled ?? false,
+        rampEnabled: challenge.arena?.rampEnabled ?? false,
         ...(challenge.goal === EvolutionGoal.MOTOR_LOOP
           ? { terrainEnabled: true, terrainSeed: (Math.random() * 1e9) | 0 }
           : {}),
@@ -1312,7 +1462,8 @@ export default function App() {
           100,
           GROUND_Y - 50,
           config.goal,
-          config.arena.difficulty ?? 1
+          config.arena.difficulty ?? 1,
+          config.arena
         )
       );
     }
@@ -1389,6 +1540,7 @@ export default function App() {
       generation: currentGen,
       generationDurationSec: config.generationDuration,
       appearance: selectedAppearance,
+      rewardRecipe: config.rewardRecipe,
     });
     setFinishedModels(loadFinishedModels());
     setTransferSourceName(null);
@@ -1484,7 +1636,8 @@ export default function App() {
           100,
           GROUND_Y - 50,
           targetGoal,
-          difficulty
+          difficulty,
+          config.arena
         )
       );
     }
@@ -1950,7 +2103,8 @@ export default function App() {
             100,
             GROUND_Y - 50,
             data.goal || config.goal,
-            config.arena.difficulty ?? 1
+            config.arena.difficulty ?? 1,
+            config.arena
           );
           newCreatures.push(creature);
         }
@@ -2016,7 +2170,8 @@ export default function App() {
             activeLeader.privateWorld ?? worldObjects,
             config.customGoal,
             obstacles,
-            config.paraPilotStage
+            config.paraPilotStage,
+            config.rewardRecipe
           )
         : null;
     },
@@ -2026,6 +2181,7 @@ export default function App() {
       config.goal,
       config.customGoal,
       config.paraPilotStage,
+      config.rewardRecipe,
       worldObjects,
       obstacles,
       activeLeader?.fitness,
@@ -2066,6 +2222,8 @@ export default function App() {
   const currentModelBestDisplay = formatBestEver(config.goal, currentModelBestFitness);
   const displayedGenerationCount = generationHistory.length;
 
+  const activeRewardFingerprint = rewardRecipeFingerprint(config.rewardRecipe);
+
   const goalBestEver = useMemo(
     () =>
       resolveGoalBestEver(
@@ -2074,9 +2232,18 @@ export default function App() {
           fitness: bestEverFitness,
           generationDurationSec: bestEverGenerationDuration || config.generationDuration,
         },
-        finishedModels
+        finishedModels,
+        undefined,
+        activeRewardFingerprint
       ),
-    [config.goal, config.generationDuration, bestEverFitness, bestEverGenerationDuration, finishedModels]
+    [
+      config.goal,
+      config.generationDuration,
+      bestEverFitness,
+      bestEverGenerationDuration,
+      finishedModels,
+      activeRewardFingerprint,
+    ]
   );
 
   const suggestedSaveName = transferSourceName
@@ -2084,13 +2251,23 @@ export default function App() {
     : `${selectedTemplate.name} Gen ${currentGen}`;
 
   const handleResetGoalBestEver = useCallback(() => {
-    const nextModels = clearGoalBestEver(config.goal);
+    if (customEnvironmentLockRef.current) {
+      setBestEverFitness(0);
+      bestEverFitnessRef.current = 0;
+      setBestEverGenerationDuration(0);
+      bestEverGenerationDurationRef.current = 0;
+      return;
+    }
+    const nextModels = clearGoalBestEver(
+      config.goal,
+      rewardRecipeFingerprint(config.rewardRecipe)
+    );
     setFinishedModels(nextModels);
     setBestEverFitness(0);
     bestEverFitnessRef.current = 0;
     setBestEverGenerationDuration(0);
     bestEverGenerationDurationRef.current = 0;
-  }, [config.goal]);
+  }, [config.goal, config.rewardRecipe]);
 
   const MetricCard = ({
     icon,
@@ -2118,6 +2295,10 @@ export default function App() {
     </div>
   );
 
+  const usingCustomEnvironment = activeTab === 'custom' && activeCustomEnvironment !== null;
+  const inTrainingView = activeTab === 'simulation' || usingCustomEnvironment;
+  const freeZoneTemplates = useMemo(() => filterTemplatesForZone(templates, 'free'), [templates]);
+
   const inspectorControlProps = {
     config,
     onUpdateConfig: handleUpdateConfig,
@@ -2131,8 +2312,8 @@ export default function App() {
     onExportBestModel: handleExportBestModel,
     onImportModel: handleImportModel,
     generation: displayedGenerationCount,
-    templates: zoneTemplates,
-    zoneId: activeZone,
+    templates: usingCustomEnvironment ? freeZoneTemplates : zoneTemplates,
+    zoneId: usingCustomEnvironment ? ('free' as ArenaZoneId) : activeZone,
   };
 
   const sandboxMenuSections = {
@@ -2205,12 +2386,19 @@ export default function App() {
           />
         </div>
       </section>
-      <ArenaModifiersPanel
-        config={config}
-        onUpdateConfig={handleUpdateConfig}
-        zoneId={activeZone}
-        defaultOpen
-      />
+      {!usingCustomEnvironment ? (
+        <ArenaModifiersPanel
+          config={config}
+          onUpdateConfig={handleUpdateConfig}
+          zoneId={activeZone}
+          defaultOpen
+        />
+      ) : (
+        <section className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[11px] text-violet-900">
+          Custom environment geometry is locked. Arena modifiers that rebuild the scenario course are hidden here.
+          Wind and genetics still apply through the other menus.
+        </section>
+      )}
       <PerformanceDiagnosticsPanel />
       </>
     ),
@@ -2233,7 +2421,7 @@ export default function App() {
           onStartChallenge={handleStartChallenge}
           onLoadSnapshot={handleLoadSnapshot}
           onAddRandomMorph={handleAddRandomMorph}
-          zoneId={activeZone}
+          zoneId={usingCustomEnvironment ? ('free' as ArenaZoneId) : activeZone}
         />
       </>
     ),
@@ -2241,27 +2429,31 @@ export default function App() {
       <>
         <section className="grid gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3">
           <p className="text-[11px] leading-relaxed text-indigo-900">
-            Open either editor, build visually, then return to Simulation for testing.
+            Open either editor, build visually, then train in Simulation or Custom Environments.
           </p>
           <button
             type="button"
-            onClick={() => {
-              setIsFullscreen(false);
-              setActiveTab('studio');
-            }}
+            onClick={() => handleSelectTab('studio')}
             className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white"
           >
             Open Creature Studio
           </button>
           <button
             type="button"
-            onClick={() => {
-              setIsFullscreen(false);
-              setActiveTab('environment');
-            }}
+            onClick={() => handleSelectTab('environment')}
             className="rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-800"
           >
             Open Environment Studio
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomEnvironmentsRefreshToken(t => t + 1);
+              handleSelectTab('custom');
+            }}
+            className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-900"
+          >
+            Custom Environments
           </button>
         </section>
         <ModelsPanel
@@ -2300,30 +2492,53 @@ export default function App() {
       className={`bg-slate-50 text-slate-800 flex flex-col font-sans ${
         isFullscreen
           ? 'h-dvh max-h-dvh overflow-hidden fixed inset-0 z-50'
-          : activeTab === 'simulation'
+          : activeTab === 'simulation' || activeTab === 'custom'
             ? 'min-h-screen'
             : 'h-dvh max-h-dvh overflow-hidden'
       }`}
       id="app-root"
     >
       
-      {/* Premium Header — hidden in immersive fullscreen */}
+      {/* Brand header — hidden in immersive fullscreen */}
       {!isFullscreen && (
-      <header className="border-b border-slate-200/80 bg-white/90 backdrop-blur-md sticky top-0 z-40 px-6 py-4 shadow-sm" id="main-header">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-200 animate-pulse">
-              <Brain className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-slate-900 flex items-center gap-2">
-                Biomechanics & Neuroevolution Sandbox
-                <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">NEAT + Verlet</span>
-              </h1>
-              <p className="text-xs text-slate-500 font-medium">Observe creature adaptation, motor coordination, and gait evolution in real-time</p>
-            </div>
+      <header
+        className="sticky top-0 z-40 border-b border-slate-200/70 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-6 py-4 shadow-[0_1px_0_rgba(15,23,42,0.04)]"
+        id="main-header"
+      >
+        <div className="mx-auto flex max-w-7xl items-center gap-4">
+          <div
+            className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--brand-ink)] text-white shadow-[0_8px_20px_-12px_rgba(15,23,42,0.55)]"
+            aria-hidden="true"
+          >
+            <Brain className="h-6 w-6" strokeWidth={1.75} />
+            <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-[var(--brand-accent)] ring-2 ring-white" />
           </div>
-
+          <div className="min-w-0">
+            <h1
+              className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-[var(--brand-ink)]"
+              style={{ fontFamily: 'var(--font-display)' }}
+            >
+              <span className="text-[1.35rem] font-extrabold leading-none tracking-[-0.03em] sm:text-[1.55rem]">
+                Biomechanics
+              </span>
+              <span className="text-[1.05rem] font-semibold leading-none tracking-[-0.02em] text-slate-500 sm:text-[1.2rem]">
+                &amp; Neuroevolution
+              </span>
+              <span className="relative text-[1.35rem] font-extrabold leading-none tracking-[-0.04em] text-[var(--brand-mark)] sm:text-[1.55rem]">
+                Sandbox
+                <span
+                  className="absolute -bottom-1 left-0 h-[3px] w-full rounded-full bg-[var(--brand-accent)]/85"
+                  aria-hidden="true"
+                />
+              </span>
+            </h1>
+            <p
+              className="mt-1.5 text-[0.8rem] font-medium italic leading-snug text-[var(--brand-muted)] sm:text-[0.85rem]"
+              style={{ fontFamily: 'var(--font-tagline)' }}
+            >
+              A serious place to do silly things.
+            </p>
+          </div>
         </div>
       </header>
       )}
@@ -2331,7 +2546,7 @@ export default function App() {
       {/* Main Sandbox Layout — visualizer-first */}
       <main
         className={`flex-1 w-full mx-auto flex flex-col min-h-0 ${
-          isFullscreen || activeTab !== 'simulation'
+          isFullscreen || !inTrainingView
             ? 'max-w-none p-2 gap-1.5 overflow-hidden'
             : 'max-w-[1800px] p-3 md:p-4 gap-3'
         }`}
@@ -2348,9 +2563,8 @@ export default function App() {
           <div className={`flex ${isFullscreen ? 'bg-white rounded-lg border border-slate-200 px-2 pt-1' : ''}`}>
             <button
               onClick={() => {
-                setIsFullscreen(false);
                 setPackagesRefreshToken(t => t + 1);
-                setActiveTab('models');
+                handleSelectTab('models');
               }}
               className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
                 activeTab === 'models'
@@ -2373,10 +2587,7 @@ export default function App() {
               {isFullscreen ? 'Sim' : 'Simulation Sandbox'}
             </button>
             <button
-              onClick={() => {
-                setIsFullscreen(false);
-                setActiveTab('studio');
-              }}
+              onClick={() => handleSelectTab('studio')}
               className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
                 activeTab === 'studio'
                   ? 'border-indigo-600 text-indigo-600'
@@ -2388,9 +2599,21 @@ export default function App() {
             </button>
             <button
               onClick={() => {
-                setIsFullscreen(false);
-                setActiveTab('environment');
+                setCustomEnvironmentsRefreshToken(t => t + 1);
+                handleSelectTab('custom');
+                if (!activeCustomEnvironment) setIsFullscreen(false);
               }}
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
+                activeTab === 'custom'
+                  ? 'border-violet-600 text-violet-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <Map className="w-4 h-4" />
+              {isFullscreen ? 'Custom' : 'Custom Environments'}
+            </button>
+            <button
+              onClick={() => handleSelectTab('environment')}
               className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
                 activeTab === 'environment'
                   ? 'border-indigo-600 text-indigo-600'
@@ -2402,7 +2625,7 @@ export default function App() {
             </button>
           </div>
 
-          {activeTab === 'simulation' && (
+          {inTrainingView && (
             <button
               type="button"
               onClick={() => setIsFullscreen(v => !v)}
@@ -2491,14 +2714,32 @@ export default function App() {
           </div>
         </div>
 
-        {activeTab !== 'models' && (
+        {inTrainingView && (
         <div className="flex items-center gap-2 shrink-0">
           <div className="flex-1 min-w-0">
-            <ZoneTabs
-              activeZone={activeZone}
-              onSelectZone={handleSelectZone}
-              compact={isFullscreen}
-            />
+            {!usingCustomEnvironment ? (
+              <ZoneTabs
+                activeZone={activeZone}
+                onSelectZone={handleSelectZone}
+                compact={isFullscreen}
+              />
+            ) : (
+              <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900">
+                Custom environment · {activeCustomEnvironment!.name}
+                <button
+                  type="button"
+                  onClick={() => {
+                    customEnvironmentLockRef.current = false;
+                    activeCustomEnvironmentRef.current = null;
+                    setActiveCustomEnvironment(null);
+                    setIsFullscreen(false);
+                  }}
+                  className="ml-2 font-bold text-violet-700 underline"
+                >
+                  Change environment
+                </button>
+              </div>
+            )}
           </div>
         </div>
         )}
@@ -2521,7 +2762,7 @@ export default function App() {
             onPermanentlyDeleteUntrainedPackage={handlePermanentlyDeleteUntrainedPackage}
             onPermanentlyDeleteMany={handlePermanentlyDeleteMany}
           />
-        ) : activeTab === 'simulation' ? (
+        ) : inTrainingView ? (
           <div
             className={`flex gap-2 min-h-0 ${
               isFullscreen ? 'flex-1 overflow-hidden' : 'items-stretch'
@@ -2563,6 +2804,8 @@ export default function App() {
                 onSetSimulationSpeed={speed => handleUpdateConfig({ simulationSpeed: speed })}
                 rewardBreakdown={rewardBreakdown}
                 rewardBaseline={rewardBaseline}
+                rewardRecipe={config.rewardRecipe}
+                onRewardRecipeChange={handleRewardRecipeChange}
               />
 
               {/* Live telemetry — retained cards at ~70% size */}
@@ -2663,10 +2906,26 @@ export default function App() {
               fillHeight={isFullscreen}
               defaultOpen
               sections={sandboxMenuSections}
-              summary={`${ARENA_ZONES[activeZone].shortLabel} · ${selectedTemplate.name} · ${getGoalInfo(config.goal).shortLabel}`}
+              summary={
+                usingCustomEnvironment
+                  ? `${activeCustomEnvironment!.name} · ${selectedTemplate.name} · ${getGoalInfo(config.goal).shortLabel}`
+                  : `${ARENA_ZONES[activeZone].shortLabel} · ${selectedTemplate.name} · ${getGoalInfo(config.goal).shortLabel}`
+              }
               className={isFullscreen ? 'self-stretch' : 'self-start sticky top-3 max-h-[calc(100vh-5rem)]'}
             />
           </div>
+        ) : activeTab === 'custom' ? (
+          <CustomEnvironmentsPanel
+            activeEnvironmentId={activeCustomEnvironment?.id ?? null}
+            refreshToken={customEnvironmentsRefreshToken}
+            onEnvironmentsChanged={() => setCustomEnvironmentsRefreshToken(t => t + 1)}
+            onTrain={applyCustomEnvironment}
+            onEditInStudio={environment => {
+              setEnvironmentStudioLoadRequest(structuredClone(environment));
+              handleSelectTab('environment');
+            }}
+            onOpenEnvironmentStudio={() => handleSelectTab('environment')}
+          />
         ) : activeTab === 'studio' ? (
           <Studio
             onLoadCustomTemplate={handleLoadCustomTemplate}
@@ -2678,23 +2937,9 @@ export default function App() {
           />
         ) : (
           <EnvironmentStudio
-            onTest={(environment: EnvironmentPackage) => {
-              const nextGoal = environment.goal ?? config.goal;
-              setEnvironmentTheme(environment.theme);
-              if (environment.goal) {
-                setConfig(current => ({ ...current, goal: environment.goal! }));
-              }
-              const copied = structuredClone(environment.obstacles);
-              setObstacles(copied);
-              obstaclesRef.current = copied;
-              const objects = environment.worldObjects.length
-                ? structuredClone(environment.worldObjects)
-                : createWorldObjects(nextGoal, config.arena.difficulty);
-              setWorldObjects(objects);
-              worldObjectsRef.current = objects;
-              initializePopulation(selectedTemplate, config.populationSize, true);
-              openSimulation();
-            }}
+            onTest={applyCustomEnvironment}
+            loadRequest={environmentStudioLoadRequest}
+            onLoadRequestHandled={() => setEnvironmentStudioLoadRequest(null)}
           />
         )}
 
@@ -2707,7 +2952,7 @@ export default function App() {
       />
 
       {/* Modern footer */}
-      {!isFullscreen && activeTab === 'simulation' && (
+      {!isFullscreen && inTrainingView && (
       <footer className="border-t border-slate-200 bg-white/70 backdrop-blur-sm mt-auto py-5 text-center text-xs text-slate-400 font-medium" id="main-footer">
         <div className="max-w-7xl mx-auto px-6">
           Inspired by Keiwan's Evolution. Designed using custom 2D point-spring physics constraints, Verlet Integration, and NEAT neuroevolution algorithms.

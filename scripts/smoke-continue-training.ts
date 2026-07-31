@@ -33,9 +33,15 @@ assert.ok(heightDest === 'flying' || heightDest === 'free');
 const groups = groupTrainableGoalsByCategory(flyingOpts);
 assert.ok(groups.some(g => g.category === 'flight' && g.goals.length >= 2));
 
+// Exact name first: the loose `includes('Cart')` fallback must not grab an
+// aero-equipped cart (e.g. Glide Cart), which legitimately lists flight goals.
 const cart =
-  CREATURE_TEMPLATES.find(t => t.name === 'Motor Cart' || t.name.includes('Cart')) ??
-  CREATURE_TEMPLATES.find(t => t.nodes.some(n => n.isMotorWheel));
+  CREATURE_TEMPLATES.find(t => t.name === 'Motor Cart') ??
+  CREATURE_TEMPLATES.find(
+    t =>
+      t.nodes.some(n => n.isMotorWheel) &&
+      !t.muscles.some(m => m.aeroType && m.aeroType !== 'none')
+  );
 assert.ok(cart, 'motor template required');
 const motorOpts = listTrainableGoalsForBlueprint(cart!, 'motor');
 assert.ok(motorOpts.some(o => o.goal === EvolutionGoal.MOTOR_DRIVE));

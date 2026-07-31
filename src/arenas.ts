@@ -28,8 +28,13 @@ import {
   clampRampAngleDeg,
   clampRampWidthPx,
   rampHeightForAngle,
+  FINISH_RUN_AUTHORED_BASE,
+  FINISH_RUN_AUTHORED_MAX,
   scaleW,
   scaleD,
+  effectiveTowerHeight,
+  CHUTE_TOWER_X,
+  CHUTE_TOWER_WIDTH,
 } from './physicsConstants';
 import { hoopInnerRadiusForBlueprint } from './terrain';
 
@@ -39,7 +44,25 @@ const S = COURSE_START_X;
 /** Base gap / finish geometry (scaled by difficulty / progressive tier in builders). */
 export const GAP_START = S + scaleW(160);
 export const GAP_WIDTH = BASE_GAP_WIDTH;
-export const FINISH_LINE_X = S + scaleW(1400);
+/** Authored px from course start to finish for a progressive tier. */
+export function finishRunAuthored(tier = 0): number {
+  const t = Math.max(0, tier);
+  if (t === 0) return FINISH_RUN_AUTHORED_BASE;
+  const span = FINISH_RUN_AUTHORED_MAX - FINISH_RUN_AUTHORED_BASE;
+  return Math.round(FINISH_RUN_AUTHORED_BASE + span * Math.min(1, t / 4));
+}
+
+/** Scaled finish run length from course start (post WIDTH_SCALE). */
+export function finishRunLength(arena?: Partial<ArenaModifiers>): number {
+  const d = clampDifficulty(arena?.difficulty);
+  const tier = arena?.progressiveTier ?? 0;
+  const prog = progressiveFactor(tier);
+  const authored = finishRunAuthored(tier);
+  return Math.round(scaleW(authored) * d * (tier > 0 ? prog : 1));
+}
+
+export const FINISH_RUN_LENGTH = scaleW(FINISH_RUN_AUTHORED_BASE);
+export const FINISH_LINE_X = S + FINISH_RUN_LENGTH;
 export const PARK_ZONE_X = S + scaleW(420);
 export const PARK_ZONE_WIDTH = scaleW(140);
 
@@ -124,6 +147,24 @@ export function makeFinish(x: number, label = 'FINISH'): Obstacle {
   return { type: 'finish', x, y: GROUND_Y - h, width: scaleW(8), height: h, label };
 }
 
+/** Vertical launch tower with a platform at the top for parachute goals. */
+export function makeTower(
+  x: number,
+  height: number,
+  width = CHUTE_TOWER_WIDTH,
+  label = 'TOWER'
+): Obstacle {
+  const h = Math.max(scaleD(80), Math.round(height));
+  return {
+    type: 'tower',
+    x,
+    y: GROUND_Y - h,
+    width,
+    height: h,
+    label,
+  };
+}
+
 export function makeCheckpoint(x: number, index: number): Obstacle {
   const h = Math.max(80, scaleD(110) * 2);
   return {
@@ -181,7 +222,14 @@ export function makeHoopForBlueprint(blueprint: CreatureBlueprint): WorldObject 
 }
 
 export function makeTarget(x: number, y: number, radius: number): Obstacle {
-  return { type: 'target', x, y, width: radius * 2, height: radius * 2, targetRadius: radius };
+  return {
+    type: 'target',
+    x: x - radius,
+    y: y - radius,
+    width: radius * 2,
+    height: radius * 2,
+    targetRadius: radius,
+  };
 }
 
 /**
@@ -201,6 +249,7 @@ export function appendOptionalRampPit(
 
   if (
     goal === EvolutionGoal.PARA_RAMP_GLIDE ||
+    goal === EvolutionGoal.CHUTE_DESCENT ||
     goal === EvolutionGoal.AERIAL_CROSSING ||
     goal === EvolutionGoal.MOTOR_GAP ||
     goal === EvolutionGoal.MOTOR_LAUNCH_LAND ||
@@ -282,6 +331,18 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
       break;
     }
 
+    case EvolutionGoal.CHUTE_DESCENT: {
+      const towerH = effectiveTowerHeight(arena);
+      const towerW = CHUTE_TOWER_WIDTH;
+      obstacles.push(makeTower(CHUTE_TOWER_X, towerH, towerW, 'TOWER'));
+      const padW = scaleW(220);
+      const padThick = scaleD(18);
+      obstacles.push(
+        makePad(CHUTE_TOWER_X - scaleW(20), GROUND_Y - padThick, padW, padThick, 'LAND')
+      );
+      break;
+    }
+
     case EvolutionGoal.MOTOR_LAUNCH_LAND: {
       const pitW = effectiveGapWidth(arena, 220 / 216);
       const rampW = effectiveRampWidth(arena, scaleW(260));
@@ -300,12 +361,13 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
 
     case EvolutionGoal.MOTOR_HURDLES: {
       const hurdleW = Math.max(scaleW(TYPICAL_NODE_RADIUS * 2.8), scaleW(34));
-      const baseH = Math.round(Math.max(scaleD(38), TYPICAL_BODY_HEIGHT * 0.35) * tier);
-      const spacing = Math.round(scaleW(210) * (0.85 + d * 0.2));
+      const baseH = Math.round(Math.max(scaleD(28), TYPICAL_BODY_HEIGHT * 0.28) * tier);
+      const spacing = Math.round(scaleW(2100) * (0.85 + d * 0.2));
       const count = 6;
+      const start = S + scaleW(1200);
       for (let i = 0; i < count; i++) {
-        const h = Math.round((baseH + 10 + (i % 3) * 8) * (0.9 + d * 0.25));
-        const x = S + scaleW(120) + i * spacing;
+        const h = Math.round((baseH + 8 + (i % 3) * 6) * (0.85 + d * 0.2));
+        const x = start + i * spacing;
         obstacles.push({
           type: 'box',
           x,
@@ -315,20 +377,22 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
           hurdleIndex: i,
         });
       }
-      obstacles.push(makeFinish(S + scaleW(120) + count * spacing + scaleW(180)));
+      obstacles.push(makeFinish(start + count * spacing + scaleW(1800)));
       break;
     }
 
     case EvolutionGoal.SPRINT_FINISH: {
-      const finishX = S + Math.round(scaleW(1400) * d * tier);
-      obstacles.push(makeCheckpoint(S + Math.round(scaleW(400) * d), 0));
-      obstacles.push(makeCheckpoint(S + Math.round(scaleW(850) * d), 1));
+      const run = finishRunLength(arena);
+      const finishX = S + run;
+      obstacles.push(makeCheckpoint(S + Math.round(run * 0.28), 0));
+      obstacles.push(makeCheckpoint(S + Math.round(run * 0.58), 1));
       obstacles.push(makeFinish(finishX));
       break;
     }
 
     case EvolutionGoal.ROUGH_TERRAIN_TRAVERSE: {
-      const section = Math.round(scaleW(160) * d * tier);
+      const run = finishRunLength(arena);
+      const section = Math.round(run / 4);
       obstacles.push(makeCheckpoint(S + section, 0));
       obstacles.push(makeCheckpoint(S + section * 2, 1));
       obstacles.push(makeCheckpoint(S + section * 3, 2));
@@ -342,20 +406,25 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
 
     case EvolutionGoal.MOTOR_BRIDGE: {
       const pitW = effectiveGapWidth(arena, 560 / 216);
-      obstacles.push(makePit(S + scaleW(40), pitW));
-      const beamH = scaleD(18);
-      const beamW = Math.min(pitW - scaleW(40), Math.round(scaleW(520) * d));
-      obstacles.push(makePad(S + scaleW(60), GROUND_Y - 70, beamW, beamH, 'bridge'));
+      const pitX = S + scaleW(40);
+      obstacles.push(makePit(pitX, pitW));
+      // Bridge spans the pit lip-to-lip. The legacy layout floated a shorter
+      // deck 70px (unscaled, pre-CREATURE_WORLD_SCALE) above ground with lip
+      // holes on both sides — unreachable and unfinishable for ~12px bodies.
+      const deckLip = scaleD(12);
+      const beamH = scaleD(18) + deckLip;
+      obstacles.push(makePad(pitX, GROUND_Y - deckLip, pitW, beamH, 'bridge'));
       break;
     }
 
     case EvolutionGoal.MOTOR_SLALOM: {
-      const start = S + scaleW(100);
-      const section = Math.round(scaleW(220) * (0.9 + d * 0.15));
-      obstacles.push(makeRamp(start, scaleW(150), 18, 'TECH'));
-      obstacles.push(makePad(start + section, GROUND_Y - scaleD(34), scaleW(95), scaleD(12), 'TECH'));
-      obstacles.push(makePad(start + section * 2, GROUND_Y - scaleD(62), scaleW(70), scaleD(12), 'TECH'));
-      const riserHeight = Math.round((54 + d * 12) * tier);
+      const run = finishRunLength(arena);
+      const start = S + Math.round(run * 0.08);
+      const section = Math.round(run * 0.12);
+      obstacles.push(makeRamp(start, Math.round(section * 0.65), 18, 'TECH'));
+      obstacles.push(makePad(start + section, GROUND_Y - scaleD(34), Math.round(section * 0.42), scaleD(12), 'TECH'));
+      obstacles.push(makePad(start + section * 2, GROUND_Y - scaleD(62), Math.round(section * 0.32), scaleD(12), 'TECH'));
+      const riserHeight = Math.round((48 + d * 10) * Math.max(1, tier * 0.5 + 0.75));
       obstacles.push({
         type: 'box',
         x: start + section * 3,
@@ -364,11 +433,11 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
         height: riserHeight,
         label: 'TECH',
       });
-      obstacles.push(makeRamp(start + section * 4, scaleW(160), 24, 'TECH'));
-      obstacles.push(makePad(start + section * 5, GROUND_Y - scaleD(18), scaleW(80), scaleD(8), 'TECH'));
+      obstacles.push(makeRamp(start + section * 4, Math.round(section * 0.7), 24, 'TECH'));
+      obstacles.push(makePad(start + section * 5, GROUND_Y - scaleD(18), Math.round(section * 0.36), scaleD(8), 'TECH'));
       obstacles.push(makeCheckpoint(start + section * 3 - scaleW(30), 0));
       obstacles.push(makeCheckpoint(start + section * 5 - scaleW(30), 1));
-      obstacles.push(makeFinish(start + section * 6));
+      obstacles.push(makeFinish(S + run));
       break;
     }
 
@@ -381,10 +450,16 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
 
     case EvolutionGoal.BALANCE_BEAM: {
       const pitW = effectiveGapWidth(arena, 640 / 216);
-      const beamW = Math.round(scaleW(580) * d);
+      const pitX = S + scaleW(40);
       const beamThickness = Math.max(scaleD(10), Math.round(scaleD(16) - d));
-      obstacles.push(makePit(S + scaleW(40), pitW));
-      obstacles.push(makePad(S + scaleW(70), GROUND_Y - 55, beamW, beamThickness, 'beam'));
+      obstacles.push(makePit(pitX, pitW));
+      // Beam spans the pit lip-to-lip with a small mountable deck lip. The
+      // legacy layout started 90px inside the pit (a guaranteed fall) and sat
+      // 55px (unscaled, pre-CREATURE_WORLD_SCALE) above ground — unmountable.
+      const deckLip = scaleD(12);
+      obstacles.push(
+        makePad(pitX, GROUND_Y - deckLip, pitW, beamThickness + deckLip, 'beam')
+      );
       break;
     }
 
@@ -417,39 +492,45 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
 
     case EvolutionGoal.KICK_GOAL: {
       const goalX = S + Math.round(scaleW(700) * d);
+      const postW = scaleW(14);
       const mouth = scaleW(90);
       const postH = 110;
+      const innerLeft = goalX + postW;
+      const innerRight = goalX + mouth;
+      const mouthInner = innerRight - innerLeft;
       obstacles.push({
         type: 'box',
         x: goalX,
         y: GROUND_Y - postH,
-        width: scaleW(14),
+        width: postW,
         height: postH,
+        label: 'GOAL_POST',
       });
       obstacles.push({
         type: 'box',
-        x: goalX + mouth,
+        x: innerRight,
         y: GROUND_Y - postH,
-        width: scaleW(14),
+        width: postW,
         height: postH,
+        label: 'GOAL_POST',
       });
       obstacles.push({
         type: 'bar',
-        x: goalX + mouth / 2,
+        x: innerLeft,
         y: GROUND_Y - postH,
-        width: mouth,
+        width: mouthInner,
         height: scaleD(5),
         barClearHeight: postH,
         label: 'GOAL',
       });
       obstacles.push({
         type: 'finish',
-        x: goalX + scaleW(14),
+        x: innerLeft,
         y: GROUND_Y - 100,
-        width: mouth - scaleW(14),
+        width: mouthInner,
         height: 100,
         label: 'NET',
-        zoneWidth: mouth - scaleW(14),
+        zoneWidth: mouthInner,
       });
       break;
     }
@@ -459,10 +540,11 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
 
     case EvolutionGoal.DODGEBALL: {
       const hazardH = scaleD(18);
+      const run = finishRunLength(arena);
       const hazards = [
-        { x: S + scaleW(120), y: GROUND_Y - 60, w: scaleW(80) },
-        { x: S + scaleW(420), y: GROUND_Y - 95, w: scaleW(70) },
-        { x: S + scaleW(720), y: GROUND_Y - 55, w: scaleW(80) },
+        { x: S + Math.round(run * 0.12), y: GROUND_Y - 60, w: scaleW(800) },
+        { x: S + Math.round(run * 0.42), y: GROUND_Y - 95, w: scaleW(700) },
+        { x: S + Math.round(run * 0.72), y: GROUND_Y - 55, w: scaleW(800) },
       ];
       for (let index = 0; index < hazards.length; index += 1) {
         const h = hazards[index];
@@ -471,7 +553,7 @@ export function buildGoalArena(goal: EvolutionGoal, arena?: ArenaOpts): Obstacle
           hazardOrder: index,
         });
       }
-      obstacles.push(makeFinish(S + Math.round(scaleW(1100) * d * tier)));
+      obstacles.push(makeFinish(S + run));
       break;
     }
 
@@ -499,15 +581,12 @@ export function buildGoalWorldObjects(
     goal === EvolutionGoal.CARRY_BALL ||
     goal === EvolutionGoal.CUSTOM ||
     goal === EvolutionGoal.KICK_GOAL ||
-    goal === EvolutionGoal.HIT_TARGET ||
-    goal === EvolutionGoal.DODGEBALL
+    goal === EvolutionGoal.HIT_TARGET
   ) {
     const x =
-      goal === EvolutionGoal.DODGEBALL
-        ? S + Math.round(scaleW(280) * d)
-        : goal === EvolutionGoal.KICK_GOAL || goal === EvolutionGoal.HIT_TARGET
-          ? S + Math.round(scaleW(200) * d)
-          : S + Math.round(scaleW(140) * d);
+      goal === EvolutionGoal.KICK_GOAL || goal === EvolutionGoal.HIT_TARGET
+        ? S + Math.round(scaleW(200) * d)
+        : S + Math.round(scaleW(140) * d);
     const radius = scaleW(14);
     const y = GROUND_Y - radius;
     objects.push({

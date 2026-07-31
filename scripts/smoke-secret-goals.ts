@@ -85,7 +85,10 @@ function motorCartCreature(
       { id: 1, type: 'hidden' as const, x: 0, y: 0 },
       { id: 2, type: 'output' as const, x: 0, y: 0 },
     ],
-    connections: [{ from: 0, to: 1, weight: 0.5 }, { from: 1, to: 2, weight: 0.5 }],
+    connections: [
+      { fromNode: 0, toNode: 1, weight: 0.5, enabled: true, innovation: 1 },
+      { fromNode: 1, toNode: 2, weight: 0.5, enabled: true, innovation: 2 },
+    ],
   };
   return {
     ...sprongoCreature({ blueprint, genome, generation: 8 }),

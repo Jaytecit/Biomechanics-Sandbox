@@ -21,7 +21,10 @@ import {
   WALK_ALTERNATE_BONUS,
   WALK_SWING_MIN_FRAMES,
   WALK_STEP_MIN_INTERVAL,
+  WALK_STRIDE_MIN_PROGRESS,
   SHUFFLE_OSC_WEIGHT,
+  LOCOMOTION_SLIDE_SHAPING,
+  LOCOMOTION_SAME_FOOT_SCALE,
 } from '../src/physicsConstants';
 import { CREATURE_TEMPLATES } from '../src/templates';
 import {
@@ -32,18 +35,34 @@ import {
   genomeIOForBlueprint,
 } from '../src/types';
 
-assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.21.0');
+assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.26.0');
 assert.equal(WALK_MAX_CONTACT_POINTS, 4);
 assert.ok(HOP_CHAIN_GROUND_MAX >= 4);
 assert.ok(WALK_SWING_MIN_FRAMES >= 4);
 assert.ok(WALK_STEP_MIN_INTERVAL >= 4);
+assert.ok(
+  WALK_SWING_MIN_FRAMES <= 6,
+  'swing gate must stay reachable for scaled walkers'
+);
 assert.ok(WALK_STEP_POINTS > 0);
 
 const blueprint =
+  CREATURE_TEMPLATES.find(item => item.name === 'Sprongo') ??
   CREATURE_TEMPLATES.find(item => item.name === 'Biped Walker') ??
   CREATURE_TEMPLATES[0];
 const io = genomeIOForBlueprint(blueprint);
 const idleActions = new Array(io.outputs).fill(0);
+const authoredFootIdx = blueprint.nodes
+  .map((n, i) => (n.isFoot ? i : -1))
+  .filter(i => i >= 0);
+assert.ok(
+  authoredFootIdx.length >= 2,
+  `walk smoke needs ≥2 authored feet on ${blueprint.name}`
+);
+const FOOT_L = authoredFootIdx[0];
+const FOOT_R = authoredFootIdx[1];
+/** World-scale plant spacing (legacy tests used ~20–30px). */
+const PLANT_SPAN = Math.max(2, WALK_STRIDE_MIN_PROGRESS * 12);
 
 function configFor(goal: EvolutionGoal): SimulationConfig {
   return {
@@ -136,8 +155,8 @@ function finishBout(
   slide.walkStepCountRight = 0;
   assert.equal(
     calculateFitness(slide, goal),
-    0,
-    'endpoint displacement without steps must score 0'
+    400 * LOCOMOTION_SLIDE_SHAPING,
+    'endpoint displacement without steps gets only tiny slide shaping'
   );
 
   const walker = makeCreature('walk-plants', goal);
@@ -180,8 +199,12 @@ function finishBout(
   noAlt.currentX = noAlt.startX + 200;
   assert.equal(
     calculateFitness(noAlt, goal),
-    0,
-    'same-foot steps without an alternate transfer must score 0'
+    200 * LOCOMOTION_SAME_FOOT_SCALE,
+    'same-foot steps earn partial travel until an alternate unlocks'
+  );
+  assert.ok(
+    calculateFitness(walker, goal) > calculateFitness(noAlt, goal),
+    'alternating walker must beat same-foot partial credit'
   );
 
   const farmed = makeCreature('walk-farmed-ledger', goal);
@@ -191,8 +214,12 @@ function finishBout(
   farmed.currentX = farmed.startX + 400;
   assert.equal(
     calculateFitness(farmed, goal),
-    0,
-    'stride ledger without discrete steps must score 0'
+    400 * LOCOMOTION_SLIDE_SHAPING,
+    'stride ledger without discrete steps gets only slide shaping'
+  );
+  assert.ok(
+    calculateFitness(walker, goal) > calculateFitness(farmed, goal) * 10,
+    'real walkers must dominate slide shaping'
   );
 
   const setGround = (
@@ -264,17 +291,17 @@ function finishBout(
   // Fast grounded flicker without swing clearance must not credit Run steps,
   // even when body advances (vibration scoot signature).
   const buzz = makeCreature('walk-vibrate', goal);
-  const buzzL = 2;
-  const buzzR = 4;
+  const buzzL = FOOT_L;
+  const buzzR = FOOT_R;
   buzz.nodes[buzzL].x = buzz.startX;
-  buzz.nodes[buzzR].x = buzz.startX + 20;
+  buzz.nodes[buzzR].x = buzz.startX + PLANT_SPAN;
   buzz.currentX = buzz.startX;
   setGround(buzz, buzzL);
   buzz.episodeFrames = 1;
   updateWalkGait(buzz, 1); // seed frontiers
   for (let n = 0; n < 60; n += 1) {
-    buzz.currentX = buzz.startX + (n + 1) * 3;
-    buzz.nodes[buzzR].x = buzz.startX + 20 + (n + 1) * 3;
+    buzz.currentX = buzz.startX + (n + 1) * PLANT_SPAN * 0.15;
+    buzz.nodes[buzzR].x = buzz.startX + PLANT_SPAN + (n + 1) * PLANT_SPAN * 0.15;
     setGround(buzz, null);
     buzz.episodeFrames = (buzz.episodeFrames ?? 0) + 1;
     updateWalkGait(buzz, 1);
@@ -290,76 +317,103 @@ function finishBout(
     0,
     `short-air vibration must not credit Run steps, got ${buzz.walkStepCountRight}`
   );
-  assert.equal(calculateFitness(buzz, goal), 0, 'vibration scoot must score 0 on Run Right');
+  const buzzBody = Math.max(0, buzz.currentX - buzz.startX);
+  assert.equal(
+    calculateFitness(buzz, goal),
+    buzzBody * LOCOMOTION_SLIDE_SHAPING,
+    'vibration scoot without swing steps gets only slide shaping'
+  );
   assert.ok(
     (buzz.shuffleOscDistanceRight ?? 0) > 0,
     'same vibration should still feed the Shuffle oscillation ledger'
   );
 
-  // Real swing-gated forward steps with foot transfer (authored feet 2 & 4).
+  // Real swing-gated forward steps with foot transfer (authored feet).
   const step = makeCreature('walk-real-step', goal);
-  const footL = 2;
-  const footR = 4;
+  const footL = FOOT_L;
+  const footR = FOOT_R;
   assert.ok(step.nodes[footL]?.isFoot && step.nodes[footR]?.isFoot, 'Biped feet must be marked');
   step.nodes[footL].x = step.startX;
-  step.nodes[footR].x = step.startX + 30;
+  step.nodes[footR].x = step.startX + PLANT_SPAN;
   step.currentX = step.startX;
   swingPlant(step, footL, 1); // seed plant frontier
-  step.currentX = step.startX + 25;
-  step.nodes[footR].x = step.startX + 30;
+  step.currentX = step.startX + PLANT_SPAN * 0.85;
+  step.nodes[footR].x = step.startX + PLANT_SPAN;
   swingPlant(step, footR, 1);
   const afterFirst = step.walkStrideDistanceRight ?? 0;
-  assert.ok(afterFirst >= 2, `first forward swing step must credit, got ${afterFirst}`);
+  assert.ok(
+    afterFirst >= WALK_STRIDE_MIN_PROGRESS,
+    `first forward swing step must credit, got ${afterFirst}`
+  );
   assert.ok(
     (step.walkStepCountRight ?? 0) >= 1,
     'first forward swing must mint a discrete step'
   );
   assert.equal(
     calculateFitness(step, goal),
-    0,
-    'first same-line step without a prior alternate transfer must still score 0'
+    afterFirst * LOCOMOTION_SAME_FOOT_SCALE,
+    'first same-line step earns partial travel before alternate unlock'
   );
   // Advance frontiers and plant the other foot → alternate transfer unlocks score.
-  step.currentX = step.startX + 55;
-  step.nodes[footL].x = step.startX + 60;
+  step.currentX = step.startX + PLANT_SPAN * 1.8;
+  step.nodes[footL].x = step.startX + PLANT_SPAN * 2;
   swingPlant(step, footL, 1);
   assert.ok(
     (step.walkAlternateStepCountRight ?? 0) >= 1,
     'second plant on a different foot must count as alternate'
   );
   const afterAlt = calculateFitness(step, goal);
+  const expectedTravel = Math.min(
+    Math.max(0, step.currentX - step.startX),
+    step.walkStrideDistanceRight ?? 0
+  );
   assert.ok(
-    afterAlt >= 25 + WALK_ALTERNATE_BONUS,
-    `alternating steps must unlock travel-based fitness, got ${afterAlt}`
+    afterAlt >= expectedTravel && afterAlt > afterFirst * LOCOMOTION_SAME_FOOT_SCALE,
+    `alternating steps must unlock full travel fitness, got ${afterAlt} (travel≈${expectedTravel})`
   );
 
   // Knee↔knee (or hip↔knee) transfers must never unlock alternation.
   const knees = makeCreature('walk-knee-alt', goal);
-  knees.nodes[1].x = knees.startX;
-  knees.nodes[3].x = knees.startX + 30;
+  const kneeA = 0;
+  const kneeB = Math.min(1, knees.nodes.length - 1);
+  knees.nodes[kneeA].x = knees.startX;
+  knees.nodes[kneeB].x = knees.startX + PLANT_SPAN;
   knees.currentX = knees.startX;
   // Clear authored-feet gate by unmarking feet so knees can enter auto gait,
   // then prove even distinct non-foot plants do not alternate.
   for (const n of knees.nodes) n.isFoot = false;
-  swingPlant(knees, 1, 1);
-  knees.currentX = knees.startX + 25;
-  knees.nodes[3].x = knees.startX + 30;
-  swingPlant(knees, 3, 1);
-  knees.currentX = knees.startX + 55;
-  knees.nodes[1].x = knees.startX + 60;
-  swingPlant(knees, 1, 1);
+  swingPlant(knees, kneeA, 1);
+  knees.currentX = knees.startX + PLANT_SPAN * 0.85;
+  knees.nodes[kneeB].x = knees.startX + PLANT_SPAN;
+  swingPlant(knees, kneeB, 1);
+  knees.currentX = knees.startX + PLANT_SPAN * 1.8;
+  knees.nodes[kneeA].x = knees.startX + PLANT_SPAN * 2;
+  swingPlant(knees, kneeA, 1);
   assert.equal(
     knees.walkAlternateStepCountRight ?? 0,
     0,
     'non-foot contact transfers must not count as alternating steps'
   );
-  assert.equal(
-    calculateFitness(knees, goal),
-    0,
-    'knee-only gait must score 0 on Run Right'
+  const kneeTravel = Math.min(
+    Math.max(0, knees.currentX - knees.startX),
+    knees.walkStrideDistanceRight ?? 0
   );
+  const kneeFit = calculateFitness(knees, goal);
+  if ((knees.walkStepCountRight ?? 0) > 0) {
+    assert.equal(
+      kneeFit,
+      kneeTravel * LOCOMOTION_SAME_FOOT_SCALE,
+      'knee-only gait may earn same-foot partial credit only'
+    );
+  } else {
+    assert.equal(
+      kneeFit,
+      Math.max(0, knees.currentX - knees.startX) * LOCOMOTION_SLIDE_SHAPING,
+      'knee-only gait without steps gets only slide shaping'
+    );
+  }
   const strideAfterAlt = step.walkStrideDistanceRight ?? 0;
-  swingPlant(step, 1, 1);
+  swingPlant(step, footR, 1);
   assert.equal(
     step.walkStrideDistanceRight ?? 0,
     strideAfterAlt,
@@ -504,6 +558,51 @@ function finishBout(
     (jumper.jumpHeightBestClearance ?? 0) > 0,
     'lowest-point clearance ledger must populate under real physics'
   );
+}
+
+// --- Sprongo must earn Run Right reward under random init (learnability) ---
+{
+  const goal = EvolutionGoal.LOCOMOTION_RIGHT;
+  const config = configFor(goal);
+  let scored = 0;
+  let rightFit = 0;
+  let leftFit = 0;
+  let rightN = 0;
+  let leftN = 0;
+  for (let i = 0; i < 36; i += 1) {
+    const creature = spawnCreature(
+      {
+        id: `sprongo-learn-${i}`,
+        generation: 0,
+        blueprint,
+        genome: createBaseGenome(io.inputs, io.outputs),
+      },
+      100,
+      380,
+      goal,
+      1
+    );
+    for (let f = 0; f < config.generationDuration * 60; f += 1) {
+      updateCreaturePhysics(creature, [], f, config, []);
+    }
+    const fit = calculateFitness(creature, goal);
+    const dx = creature.currentX - creature.startX;
+    if (fit > 0) scored += 1;
+    if (dx > 1) {
+      rightFit += fit;
+      rightN += 1;
+    } else if (dx < -1) {
+      leftFit += fit;
+      leftN += 1;
+    }
+  }
+  assert.ok(scored > 0, `Sprongo must sometimes score on Run Right (scored=${scored})`);
+  if (rightN > 0 && leftN > 0) {
+    assert.ok(
+      rightFit / rightN > leftFit / leftN,
+      `rightward Sprongos must outscore leftward ones (${(rightFit / rightN).toFixed(2)} vs ${(leftFit / leftN).toFixed(2)})`
+    );
+  }
 }
 
 console.log(

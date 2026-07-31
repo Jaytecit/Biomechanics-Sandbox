@@ -24,7 +24,8 @@ import {
 } from 'lucide-react';
 import { CollapsibleSection } from './CollapsibleSection';
 import { TrainableGoalPicker } from './TrainableGoalPicker';
-import { FinishedModel, traitLabel } from '../savedModels';
+import { DEFAULT_REWARD_RECIPE_FINGERPRINT } from '../builtInRewardCoeffs';
+import { FinishedModel, modelRewardFingerprint, traitLabel } from '../savedModels';
 import { getGoalInfo } from '../goalCatalog';
 import { EvolutionGoal } from '../types';
 import { ArenaZoneId } from '../zones';
@@ -163,6 +164,12 @@ export const ModelsPanel: React.FC<ModelsPanelProps> = ({
                                 ? ` · ${Math.round(model.generationDurationSec)}s gen`
                                 : ''}{' '}
                               · {model.fitness.toFixed(1)} pts
+                              {modelRewardFingerprint(model) !==
+                                DEFAULT_REWARD_RECIPE_FINGERPRINT && (
+                                <span className="ml-1 text-amber-700 font-semibold">
+                                  · custom rewards
+                                </span>
+                              )}
                             </div>
                             {model.notes && (
                               <div className="text-[10px] text-slate-600 mt-0.5 italic line-clamp-2">

@@ -1,5 +1,269 @@
 # DECISIONS.md — Soft-body Sandbox
 
+## D153 — Physics/geometry repair sweep (2026-07-31)
+
+**Decision:** Soft-body physics advances `4.25.0` → `4.26.0`. A cross-area
+audit (Studio previews, arena solver, course geometry) fixed the following.
+(D152 is reserved for the Studio range-preview solver rework happening in a
+parallel session — `src/rangePreviewSolver.ts`.)
+
+**Solver (behavioral — version bump):**
+- D142 actuation flag wired in: `markLengthActuationForTick` set
+  `_actuatingThisTick` but the preserve policy never read it. Actively
+  commanded links (targetLength changed this tick) now always use
+  position-only correction, matching the documented D142 policy; held
+  commands near target still preserve Verlet history.
+- Spawn seeds `targetLength` (and `_constraintTargetSeen`) clamped inside
+  `[minLength, maxLength]` — some authored bodies carry rest lengths outside
+  the stroke, which made first ticks fight the clamp and pop on first command.
+- `rateLimitLengthTarget` normalizes inverted bounds (`minLength > maxLength`)
+  before clamping; `normalizeBlueprintMuscle` also swaps inverted stroke
+  bounds at load so downstream code can assume `min ≤ max`.
+- Ice friction band follows authored patch geometry (`obs.y`) instead of a
+  hard-coded `GROUND_Y` strip.
+
+**Course geometry:**
+- Balance Beam / Motor Bridge: deck now spans the pit lip-to-lip with a small
+  `scaleD(12)` mountable lip. Legacy layout floated the deck 55–70 unscaled px
+  up (pre-CREATURE_WORLD_SCALE; unmountable for ~12px bodies) and started
+  60–90px inside the pit (guaranteed lip fall).
+- `snapObstaclesToTerrain` preserves authored elevation above `GROUND_Y`
+  (shift by terrain lift) instead of seating every box on the local surface —
+  elevated pads/beams/platforms no longer flatten onto terrain.
+- Challenge launches no longer inherit the user's stale sandbox modifier
+  toggles (terrain/ice/wind/pit/ramp default to the challenge's own flags).
+- `motor_gap_350` no longer advertises `rampEnabled` (the optional-course
+  appender always skipped MOTOR_GAP; the flag never took effect).
+
+**Render/collision alignment (no physics change):**
+- Kick Goal crossbar drawn with its authored left-edge convention (Clear Bar
+  keeps center convention) — was drawn half a mouth-width left of scoring.
+- Chute tower platform deck drawn flush under the collision top so creatures
+  stand on the drawn platform instead of floating above it.
+- Ice patch drawn at its authored band, matching the friction zone.
+
+**Persistence fidelity (found while gating — no behavior change):**
+- `sanitizeAppearanceRig` and `normalizeBlueprintMuscle` /
+  `normalizeCreatureBlueprint` wrote inapplicable optional fields as explicit
+  `undefined` keys. JSON persistence drops those keys, so sanitized objects
+  deep-compared unequal to their own saved round-trips. All normalizers now
+  omit the keys instead.
+- `smoke-continue-training` template selector: `name.includes('Cart')` grabbed
+  the aero-equipped Glide Cart (which legitimately lists flight goals) once
+  cart templates multiplied; now selects Motor Cart / non-aero motor bodies.
+
+**Evidence:** `npx tsc --noEmit` clean; 18 targeted smokes green
+(physics-invariants, piston, telescope, soft-muscle-rate, hinge-stops,
+moment-arm, solid-segments, collisions, balance-beam, motor-technical,
+kick-goal, gap, walk-jump-hop, motor-ramp-drive, motor-drive-ice,
+rough-terrain, stair-climb, aero); full `test:phase21` suite (31 scripts)
+exits 0; continue-training + finished-models smokes green.
+
+**Deferred (audited, not fixed here):** slope-tangent surface friction on
+ramps/stairs; swept-TOI placement in `collideNodeRamp`; rigid-bone ramp/capsule
+contacts without `oldX/oldY` sync; legacy `0.35`/`0.4` mass floors in
+`projectRigidBoneAxialVelocity`, wind, and aero (force scales were tuned with
+the floors — needs a dedicated retune); terrain-aware spawn for custom
+environments (`settleSpawnOnGround` is flat-only); stair riser depth vs actual
+uneven rise; `bar` obstacles have no body collision (scoring volumes only);
+hinge-stop global preserve (deliberate D138) narrowing.
+
+**Reversible:** Each fix is an isolated diff; revert physics to `4.25.0`.
+
+## D151 — Soft-muscle bone-slot moment arms (2026-07-31)
+
+**Decision:** Soft-body physics advances `4.24.0` → `4.25.0`. Soft muscles may
+attach an end to a discrete virtual slot on an existing rigid bone
+(`nearA` / `mid` / `nearB` at t = 0.25 / 0.5 / 0.75) instead of only node
+centers. Force splits to the host bone’s endpoints by barycentric weights.
+
+**Why:** Designers need mid-bone leverage (different moment arms) without
+subdividing bones or growing brain I/O. Node clicks remain joint-exact; the
+three inset slots are the new gearing options.
+
+**Rules:**
+- Soft `muscle` only; bones/pistons stay node↔node.
+- Host must be `linkKind: 'bone'` in `muscles[]` (`leverBoneA/B` + `leverSlotA/B`).
+- Levered soft muscles do not form parallel soft/hard piston slave pairs.
+- Brain output count unchanged; fingerprint includes lever fields.
+- Gate with D142 smokes + `scripts/smoke-moment-arm.ts`.
+
+**Evidence:** `scripts/smoke-moment-arm.ts`, `scripts/smoke-physics-invariants.ts`,
+`scripts/smoke-motor-ramp-drive.ts`.
+
+**Reversible:** Strip lever fields; revert length solver to two-node path;
+physics `4.24.0`.
+
+## D150 — Soft-muscle rate caps + telescope→piston (2026-07-31)
+
+**Decision:** Soft-body physics advances `4.23.1` → `4.24.0`. Creature Studio
+exposes opt-in soft-muscle command rate caps (creature default + per-muscle
+override). The redundant **telescope** link kind is collapsed into **piston**.
+
+**Why:** Soft muscles could flip `targetLength` full stroke every tick, enabling
+high-frequency vibration scooting that looks like sliding. Run/Shuffle already
+split scoring (D137); authors still needed a physics-side opt-in to prevent
+oscillation at source. Telescope and piston already shared the hard variable
+strut solver — keeping both kinds only duplicated UI/rate authorship.
+
+**Rules:**
+- Soft muscles: `resolveSoftMuscleMaxDelta` — muscle `softMaxDeltaPerTick` >
+  0 overrides; muscle `0` = unlimited; else creature
+  `softMuscleMaxDeltaPerTick`; else unlimited (legacy).
+- Cap applied at brain→`targetLength` assignment via `rateLimitLengthTarget`.
+- Legacy `linkKind: 'telescope'` and stiff-range inference normalize to
+  `piston` with `defaultPistonRatesForStroke` rates.
+- Studio: bone ↔ piston ↔ muscle cycle; body “Limit soft muscle stroke rate”
+  + per-muscle Inherit / Custom / Unlimited.
+- Controllers under `≤4.23.x` remain visible but stale when fingerprints or
+  physics version diverge.
+
+**Evidence:** `scripts/smoke-soft-muscle-rate.ts`, `scripts/smoke-piston.ts`,
+`scripts/smoke-physics-invariants.ts`.
+
+**Reversible:** Drop soft rate fields; restore telescope kind + global
+`telescopeCommandDeltaBudget` hard path; revert physics to `4.23.1`.
+
+## D149 — Post-scale observation + reward-gate retune (2026-07-31)
+
+**Decision:** Soft-body physics advances `4.23.0` → `4.23.1`. After
+`CREATURE_WORLD_SCALE = 0.1`, retune brain observation divisors and leftover
+legacy-px reward/escalation gates so world-scale bodies can learn again.
+
+**Why:** Creatures shrank 10× in linear world units. Clearance / travel **gates**
+in `physicsConstants` were mostly retuned earlier, but:
+1. Proprioception still divided node offsets and flight clearance by `100`
+   (legacy body scale) → inputs ~0.05–0.1, so random genomes produced near-zero
+   muscle drive and fitness stayed flat.
+2. Hard score gates still used legacy absolutes (`upright > 50`,
+   `peakAir >= 32`, box near `60`, para loft peaks `50`/`90`) that world-scale
+   bodies cannot pass → entire goals stuck at 0.
+3. Motor chassis share used `max(0.35, massSum)` while node masses are ~0.001,
+   zeroing rigid-bone drive coupling.
+4. Progressive height/air bars and jump challenge targets still cited legacy px.
+
+**Rules:**
+- `BODY_OBS_LENGTH_DIVISOR = 100 × CREATURE_WORLD_SCALE` (=10); speed obs
+  divisors likewise × scale. Arena-range sensors (`/400`, object range 480)
+  stay arena-scale.
+- Flight Land / Chute stick gate uses `UPRIGHT_SCORE_GOOD` (not 50).
+- Motor Launch min air = `max(MOTOR_LAUNCH_MIN_AIR_PX, jumpLandMinHeight)`.
+- Box-push near/falloff and clear-bar approach windows use world-px constants.
+- Para loft/leap height thresholds via `worldLen(...)`.
+- Progressive jump/flight height + air-distance bars × `CREATURE_WORLD_SCALE`.
+- Jump challenge targets retuned to world-scale clearances/scores.
+- Controllers trained under `≤4.23.0` remain visible but stale (obs scale).
+
+**Evidence:** `scripts/diagnose-scale-fitness.ts` (obs magnitude + upright gate);
+updated phase-21 smokes; motor ramp / walk / parking / push-box smokes.
+
+**Reversible:** Restore `/100` obs divisors and legacy absolute gates; revert
+physics to `4.23.0`.
+
+## D148 — Live built-in reward recipes (Phase 22A) (2026-07-31)
+
+**Decision:** Parameterize SPEED and JUMP_SPEED fitness term coefficients into a
+shared editable recipe (`src/builtInRewardCoeffs.ts`) consumed by both
+`calculateFitness` and `calculateRewardBreakdown`. Users can live-tune those
+coeffs from the Elite Rewards overlay, reset to defaults, and freeze the recipe
+onto finished products. Best Ever ledger keys separate default vs custom recipes.
+
+**Why:** Built-in goals had hard-coded multipliers; custom goals already allowed
+live weight edits. Exposing pilot-goal coeffs is the highest-leverage path to
+“fine-tuning learning feel” without a global reward rewrite or physics change.
+
+**Rules:**
+- Defaults must match pre-22A shipped numbers exactly (SPEED: belowGate 0.15,
+  peak 45, distance 0.35; JUMP_SPEED: peakSpeed 50, clearance 0.3, airtime 0.35).
+- Gates (`SPEED_MIN_TRAVEL_FLOOR`, `JUMP_MIN_FRAMES`, clearance floors) stay
+  fixed in `physicsConstants.ts` — not sliders in 22A.
+- `SimulationConfig.rewardRecipe` optional; omit means defaults.
+- Non-default recipes show a UI badge; freeze stores recipe + fingerprint on
+  `FinishedModel`. Best Ever uses bare `goal` for default fingerprint and
+  `goal::fingerprint` for custom — never merge across recipes.
+- Custom goals remain on `CustomGoalConfig`. No physics / feel / part changes.
+
+**Evidence:** `scripts/smoke-speed.ts` (default parity); `scripts/smoke-builtin-reward-recipe.ts`
+(override + fingerprint + breakdown alignment).
+
+**Reversible:** Ignore `rewardRecipe` / fingerprints and restore inline literals.
+
+## D147 — Contact / touch sensor (C2) (2026-07-31)
+
+**Decision:** Soft-body physics advances `4.22.5` → `4.23.0`. Every brain gains
+authoritative contact-class observations: per-node Touch encodes
+floor / structure / object (`0`, `1/3`, `2/3`, `1`), plus a fixed 5-input summary
+pack after the object sensor (`anyNodeFloor`, `anyNodeStructure`, `anyNodeObject`,
+`linkStructure`, `linkObject`). Observation only — never creates forces.
+
+**Why:** Binary `isGround` cannot tell floor from wall from ball. Gripper / sticky
+/ climb parts need class-discriminating contact feedback first. C2 adds that
+without a grip pad, reward rewrite, or physics-bearing component.
+
+**Rules:**
+- Classes: floor (flat / terrain), structure (box, ramp, stair, pit, loop, …),
+  object (ball, hoop, private box). Priority object > structure > floor.
+- Hard-link capsule hits set `linkContactStructure` and tag endpoints.
+- Controllers trained under `≤4.22.x` remain visible but stale (I/O + physics).
+- No fitness formula changes; no gripper / contact-pad forces in this gate.
+
+**Evidence:** `scripts/smoke-contact-sensor.ts`; `scripts/prove-contact-sensor.ts`
+(reactive wall retreat on held-out faces + 2/3 Motor Cart learn seeds with
+ablation contrast). Object-class tagging covered in the smoke.
+
+**Reversible:** Drop the contact pack from sensors + `genomeIOForBlueprint`;
+restore binary Touch; revert physics to `4.22.5`.
+
+## D146 — Studio world-scale authoring clamps (2026-07-30)
+
+**Decision:** Soft-body physics advances `4.22.4` → `4.22.5`. Studio mass,
+radius, bone/link length, motor power, piston rate, aero-area, and appearance
+offset sliders use **world units** matching `CREATURE_WORLD_SCALE` bodies.
+`scaleCreatureBlueprint` now scales `motorPower`; leftover legacy drive on
+already-scaled geometry is migrated once via `ensureScaledBlueprint`. Telescope
+command floor is `0.4` world-px/tick (was legacy `4`).
+
+**Why:** After creature downscale, the mass slider still spanned legacy
+`0.5–5.0`, so touching it snapped nodes to ~300× true mass (and similar
+mismatches on bone length / piston max). Authoring controls must match the
+bodies they edit.
+
+**Rules:**
+- Mass `0.0005–0.005` (default `0.0015`); radius `1–5`; link lengths `1–50`;
+  motor `0.05–2.0`; piston rates `0.05–50`; aero area `0.5–16`.
+- Load/save clamps through the same helpers; fingerprint / physics version
+  diverge marks older controllers stale when clamps change behaviour.
+
+**Evidence:** Studio slider ranges; `ensureScaledBlueprint` motor/mass migration;
+existing smoke suite retained.
+
+**Reversible:** Restore legacy slider mins/maxes and `TELESCOPE_MAX_DELTA_PER_FRAME = 4`;
+stop scaling `motorPower`; revert physics to `4.22.4`.
+
+## D145 — Object-relative sensor (C1) (2026-07-29)
+
+**Decision:** Soft-body physics advances `4.21.0` → `4.22.0`. Every brain gains a
+fixed 3-input object-relative pack: range-limited `relX`, `relY`, and proximity
+to the goal's private interactive object (prefer unique ball, else hoop, else
+nearest box/pin). Out of range or missing target → `[0,0,0]`. Observation only.
+
+**Why:** Carry Ball / Push Box / sports goals still force memorized timing
+because controllers cannot see the private object. C1 adds feedback without a
+gripper, contact pad, or reward rewrite.
+
+**Rules:**
+- `OBJECT_SENSOR_RANGE_PX = 480`; in-range values are `dx/R`, `dy/R`, `1−dist/R`.
+- Pack is always present in `genomeIOForBlueprint` (after wing/para packs).
+- Controllers trained under `≤4.21.0` remain visible but stale (I/O + physics).
+- No forces, no fitness formula changes, no manipulation components in this gate.
+
+**Evidence:** `scripts/smoke-object-sensor.ts`; `scripts/prove-object-sensor.ts`
+(reactive left/right held-outs + 3/3 Motor Cart learn seeds with ablation
+contrast). Carry Ball / package smokes retained.
+
+**Reversible:** Drop the trailing pack from sensors + `genomeIOForBlueprint`;
+revert physics to `4.21.0`.
+
 ## D144 — Wheeled solid chassis floor plant (2026-07-28)
 
 **Decision:** Soft-body physics advances `4.20.0` → `4.21.0`. Solid flat-ground

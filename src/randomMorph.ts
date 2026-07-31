@@ -4,6 +4,7 @@
  */
 
 import { CreatureBlueprint } from './types';
+import { CREATURE_WORLD_SCALE } from './creatureScale';
 
 const PALETTE = ['#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#fb7185', '#2dd4bf'];
 
@@ -11,28 +12,29 @@ const PALETTE = ['#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#fb7185
  * One-click weird body: random joint cloud with spring muscles and a few rigid bones.
  */
 export function createRandomMorph(seedName?: string): CreatureBlueprint {
+  const s = CREATURE_WORLD_SCALE;
   const nodeCount = 5 + Math.floor(Math.random() * 4); // 5–8
   const nodes: CreatureBlueprint['nodes'] = [];
   const relativePositions: { x: number; y: number }[] = [];
 
   for (let i = 0; i < nodeCount; i++) {
     const angle = (i / nodeCount) * Math.PI * 2 + Math.random() * 0.4;
-    const radius = 28 + Math.random() * 55;
-    const x = Math.cos(angle) * radius + (Math.random() - 0.5) * 20;
-    const y = -35 + Math.sin(angle) * radius * 0.7 + (Math.random() - 0.5) * 15;
+    const radius = (28 + Math.random() * 55) * s;
+    const x = Math.cos(angle) * radius + (Math.random() - 0.5) * 20 * s;
+    const y = -35 * s + Math.sin(angle) * radius * 0.7 + (Math.random() - 0.5) * 15 * s;
     relativePositions.push({ x: Math.round(x), y: Math.round(y) });
     nodes.push({
       id: i,
-      mass: 0.7 + Math.random() * 1.4,
-      radius: 6 + Math.floor(Math.random() * 5),
+      mass: (0.7 + Math.random() * 1.4) * s * s * s,
+      radius: Math.max(1, Math.round((6 + Math.floor(Math.random() * 5)) * s)),
       friction: 0.35 + Math.random() * 0.45,
       color: PALETTE[i % PALETTE.length],
     });
   }
 
   // Ensure at least one near-ground foot
-  relativePositions[0].y = Math.max(relativePositions[0].y, -8);
-  relativePositions[1].y = Math.max(relativePositions[1].y, -12);
+  relativePositions[0].y = Math.max(relativePositions[0].y, Math.round(-8 * s));
+  relativePositions[1].y = Math.max(relativePositions[1].y, Math.round(-12 * s));
 
   const muscles: CreatureBlueprint['muscles'] = [];
   let muscleId = 0;
@@ -43,7 +45,7 @@ export function createRandomMorph(seedName?: string): CreatureBlueprint {
     const b = (i + 1) % nodeCount;
     const dx = relativePositions[b].x - relativePositions[a].x;
     const dy = relativePositions[b].y - relativePositions[a].y;
-    const len = Math.max(18, Math.round(Math.hypot(dx, dy)));
+    const len = Math.max(2, Math.round(Math.hypot(dx, dy)));
     const asBone = Math.random() < 0.22;
     muscles.push({
       id: muscleId++,
@@ -69,7 +71,7 @@ export function createRandomMorph(seedName?: string): CreatureBlueprint {
     if (exists) continue;
     const dx = relativePositions[b].x - relativePositions[a].x;
     const dy = relativePositions[b].y - relativePositions[a].y;
-    const len = Math.max(18, Math.round(Math.hypot(dx, dy)));
+    const len = Math.max(2, Math.round(Math.hypot(dx, dy)));
     muscles.push({
       id: muscleId++,
       nodeA: a,

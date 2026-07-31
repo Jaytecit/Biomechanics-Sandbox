@@ -4,7 +4,12 @@
  */
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Creature } from '../types';
+import {
+  Creature,
+  CONTACT_SENSOR_COUNT,
+  FLIGHT_SENSOR_COUNT,
+  OBJECT_SENSOR_COUNT,
+} from '../types';
 import { Network, Zap } from 'lucide-react';
 
 interface NetworkVisualizerProps {
@@ -94,11 +99,42 @@ export const NetworkVisualizer: React.FC<NetworkVisualizerProps> = ({ creature }
       if (idx === 0) label = 'Sin(t)';
       else if (idx === 1) label = 'Cos(t)';
       else {
-        const nodeOffset = Math.floor((idx - 2) / 3);
-        const sensorType = (idx - 2) % 3;
-        if (sensorType === 0) label = `N${nodeOffset} dX`;
-        else if (sensorType === 1) label = `N${nodeOffset} dY`;
-        else label = `N${nodeOffset} Touch`;
+        const nodeCount = creature.nodes.length;
+        const nodeSensorEnd = 2 + 3 * nodeCount;
+        if (idx < nodeSensorEnd) {
+          const nodeOffset = Math.floor((idx - 2) / 3);
+          const sensorType = (idx - 2) % 3;
+          if (sensorType === 0) label = `N${nodeOffset} dX`;
+          else if (sensorType === 1) label = `N${nodeOffset} dY`;
+          else label = `N${nodeOffset} Touch`;
+        } else {
+          let cursor = nodeSensorEnd;
+          const hasWing = creature.muscles.some(m => m.aeroType === 'wing');
+          const hasPara = creature.muscles.some(m => m.aeroType === 'paraglider');
+          if (hasWing) {
+            const flightLabels = ['vx', 'vy', 'sinθ', 'cosθ', 'ω', 'clr'];
+            if (idx < cursor + FLIGHT_SENSOR_COUNT) {
+              label = flightLabels[idx - cursor] ?? `Fly${idx - cursor}`;
+            }
+            cursor += FLIGHT_SENSOR_COUNT;
+          }
+          if (hasPara) {
+            const paraLabels = ['spd', 'open', 'sink', 'rampD', 'onRmp'];
+            if (idx >= cursor && idx < cursor + 5) {
+              label = paraLabels[idx - cursor] ?? `Para${idx - cursor}`;
+            }
+            cursor += 5;
+          }
+          if (idx >= cursor && idx < cursor + OBJECT_SENSOR_COUNT) {
+            const objectLabels = ['objX', 'objY', 'objP'];
+            label = objectLabels[idx - cursor] ?? `Obj${idx - cursor}`;
+          }
+          cursor += OBJECT_SENSOR_COUNT;
+          if (idx >= cursor && idx < cursor + CONTACT_SENSOR_COUNT) {
+            const contactLabels = ['cFlr', 'cStr', 'cObj', 'lStr', 'lObj'];
+            label = contactLabels[idx - cursor] ?? `C${idx - cursor}`;
+          }
+        }
       }
 
       const spacing = (height - 40) / Math.max(1, inputNodes.length - 1);

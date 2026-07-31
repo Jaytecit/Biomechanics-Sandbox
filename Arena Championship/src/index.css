@@ -9,6 +9,8 @@
   --arena-mint: #5eead4;
   --arena-crowd: #94a3b8;
   --arena-spot: #fff4d6;
+  --arena-aurora: #a78bfa;
+  --arena-teal: #14b8a6;
   --font-display: "Bebas Neue", Impact, Haettenschweiler, sans-serif;
   --font-body: "DM Sans", ui-sans-serif, system-ui, sans-serif;
 }
@@ -24,15 +26,31 @@ body {
   font-family: var(--font-body);
   color: #e8eef7;
   background:
+    radial-gradient(ellipse 70% 45% at 15% 0%, rgba(167, 139, 250, 0.22), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 85% 10%, rgba(20, 184, 166, 0.16), transparent 50%),
     radial-gradient(ellipse 80% 50% at 50% -10%, rgba(232, 184, 74, 0.18), transparent 55%),
     radial-gradient(ellipse 60% 40% at 100% 100%, rgba(94, 234, 212, 0.08), transparent 50%),
-    linear-gradient(165deg, #121820 0%, #1a2332 42%, #15202b 100%);
+    linear-gradient(165deg, #0f1419 0%, #1a2332 38%, #15202b 62%, #121820 100%);
   background-attachment: fixed;
 }
 
 .font-display {
   font-family: var(--font-display);
   letter-spacing: 0.04em;
+}
+
+.arena-stage {
+  box-shadow:
+    0 0 0 1px rgba(232, 184, 74, 0.12),
+    0 0 48px rgba(167, 139, 250, 0.12),
+    inset 0 1px 0 rgba(94, 234, 212, 0.08);
+}
+
+.arena-stage-placeholder {
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 20%, rgba(167, 139, 250, 0.18), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 80% 70%, rgba(20, 184, 166, 0.12), transparent 55%),
+    linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
 }
 
 @keyframes arena-pulse {

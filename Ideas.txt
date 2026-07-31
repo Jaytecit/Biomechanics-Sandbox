@@ -1,0 +1,107 @@
+All five are possible in principle. Below is a feasibility read against the current sandbox, then a short planning sketch for each, then a fresh idea list.
+
+1. Smoother / weightier sim feel (Keiwan-like)
+Possible: yes — mostly tuning, not a rewrite.
+
+Today’s solver is fixed-dt Verlet with constraint projection, global damping hard-coded at 0.99, and gravity 0.4. Muscles are length corrections, not spring-dampers, so motion can feel snappy rather than heavy. Studio also previews with different constants than the arena, which hurts authoring judgment.
+
+Plan sketch
+
+Expose global damping + optional feel presets (light/snappy vs heavy/smooth) without changing force semantics.
+Align Studio preview with arena gravity/relaxation so authoring matches training.
+Optional medium step: soft-muscle velocity damping or 2× substeps for smoother motion.
+Gate every change with smoke-physics-invariants, locomotion, and flight smokes — D142 actuation policy is fragile.
+Avoid a full spring-damper rewrite until presets prove the gap isn’t just parameter taste.
+2. Physically evolving creatures
+Possible: yes — major new subsystem; not present today.
+
+Evolution only mutates brains. Bodies come from templates/Studio/randomMorph (one-shot random, not generational).
+
+Plan sketch
+
+Define a body genome: nodes, links, flags, solids, aero — with viability rules (connected, mass bounds, challenge constraints).
+Mutation ops: add/remove node/link, tweak mass/friction/motor/aero, flip part flags.
+Controller remapping when I/O count changes (compatibleGenome / pad-or-truncate inputs).
+Fitness must reward useful morphology, not just weird exploit shapes; start with one goal (e.g. Run) before multi-goal.
+Package/version story: morphology change bumps body fingerprint; old controllers stay visible but stale.
+This is a product pillar, not a side feature — plan it as its own phase after C2.
+
+3. Exposed live reward / penalty tuning
+Possible: yes — partially already there.
+
+Custom goals already let users edit metric weights live. Built-in goals have fixed coefficients; RewardsBreakdownPanel is read-only diagnostics.
+
+Plan sketch
+
+Parameterize built-in fitness terms into a editable coeff table (shared by calculateFitness + rewardBreakdown).
+UI: live sliders per active goal term, with reset-to-default and “freeze recipe” save.
+Mark runs that used non-default rewards so shelf models aren’t compared unfairly.
+Start with 1–2 goals (e.g. Run, Jump) before a global editor — avoids a giant reward rewrite.
+Do not mix with gripper/contact work (OUTSTANDING.md).
+Highest leverage near-term idea for “fine-tuning learning feel.”
+
+4. New creature parts (claw, platform, sticky feet, rockets, …)
+Possible: yes — clear extension path; sequencing matters.
+
+You already have muscles, bones, telescopes, pistons, motors/wheels, aero surfaces, solids, object sensors. No claw/sticky/rocket/platform as first-class parts. Gripper-class work is explicitly deferred until C2 contact sensor lands.
+
+Plan sketch (one part at a time)
+
+Part	Physics idea	Prerequisite
+Contact/touch sensor
+Observation only
+C2 (next gate)
+Sticky feet
+Conditional high friction / temporary weld when plant + brain intent
+C2
+Grab claw
+Close aperture + hold contact pair; carry without collision hacks
+C2 + grip contract
+Raise/lower platform
+Specialized piston/solid plate with stroke limits
+Mostly exists via piston + solid
+Rocket boosters
+Directed impulse with fuel/cooldown; reward audit vs “rocket exploit”
+Careful — flight rewards already punish rocket-like cheats
+Architecture path is known: types → physics → brain I/O → Studio → eligibility → rewards → smokes. Treat each part as a vertical slice with exploit tests.
+
+5. Adaptable creatures / multi-brain Gauntlet
+Possible: yes — strongest foundation of the five.
+
+Shelf models, continue-training transfer, CreaturePackage controller snapshots, and ParaPilot’s multi-genome phase handoff already exist. Missing: runtime “assess situation → select brain,” and a Gauntlet that requires a portfolio of skills on one body.
+
+Plan sketch
+
+Controller bank on a package: named brains tagged by goal/phase (run, climb, fly, carry…).
+Selector — start simple: zone/goal ID or handoff triggers (like ParaPilot), not a learned meta-controller.
+Later: lightweight assessor (terrain class, object presence, height) picks from the bank.
+Gauntlet course: sequential segments with different physics demands; score = all segments cleared with one body + bank.
+Morphology diversity becomes the unlock — brains alone can’t climb/fly/carry without the right parts.
+Natural sequel once a few specialist shelves exist per body.
+
+Sequencing recommendation
+Now / near:  C2 contact sensor (already next gate)
+Then:        Live reward tuning (built-in coeffs) + feel presets
+Then:        Sticky / claw / platform parts (physics-bearing)
+Parallel:    Multi-brain bank + Gauntlet (mostly systems, less solver risk)
+Later:       Morphological evolution (largest genetic redesign)
+
+Concept - A serious environment in which to do silly things.
+
+Fresh ideas — education + fun universe
+Ghost race — race your current elite against a translucent recording of your best shelf run.
+Curriculum cards — “Walk → Trot → Sprint” lesson packs with locked rewards and a short teaching blurb.
+Failure museum — auto-save hilarious collapse clips; shareable “bloopers” shelf.
+Design vs evolve — two players: one builds the body, one only trains the brain; score the pairing.
+Constraint puzzles — “beat Jump with max 4 nodes / no wheels” daily challenges.
+Sensor classroom — toggle inputs off (no ground sense, no object sense) to show why sensors matter.
+Energy budget — metabolic cost per muscle/motor tick; teach efficiency vs raw power.
+Weather seasons — wind, ice, mud rotate weekly in Arena; shelf models earn seasonal badges.
+Blueprint fossils — morph evolution history viewer (when morph evo exists): watch ancestors animate.
+Teacher mode — freeze physics, scrub timestep, overlay force/reward arrows for classroom demos.
+Creature passport — one body collects stamps per cleared goal; unlocks Gauntlet entry.
+Co-op haul — two creatures, shared object (beam/crate); rewards only if both contribute.
+Blind transfer exam — train on A, evaluate on held-out layout B with no further mutation.
+Soundscape / haptics-lite — contact ticks and whoosh on airtime for “weight” without changing physics.
+Sandbox story mode — short chapters (beach → cliffs → storm) that introduce one mechanic each.
+If you want to go deeper next, the best candidates for full individual planning are: (3) live reward tuning, (1) feel presets, or (5) multi-brain Gauntlet — highest impact relative to risk, and none of them block C2. Say which one to plan first.

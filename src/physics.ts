@@ -16,16 +16,30 @@ import {
   isHardLengthConstraint,
   isRigidBone,
   isBrainDrivenMuscle,
-  isVariableHardLink,
   isPiston,
   isHardLengthSlave,
   findParallelSoftMuscle,
   resolveLinkKind,
   pistonRates,
+  resolveSoftMuscleMaxDelta,
+  normalizeCreatureBlueprint,
   DEFAULT_MOTOR_POWER,
   isIsolatedJumpGoal,
   objectRelativeSensorValues,
   OBJECT_SENSOR_COUNT,
+  CONTACT_SENSOR_COUNT,
+  CONTACT_NONE,
+  CONTACT_FLOOR,
+  CONTACT_STRUCTURE,
+  CONTACT_OBJECT,
+  markNodeContact,
+  nodeContactSensorValue,
+  contactSensorValues,
+  LEVER_SLOT_T,
+  isValidLeverSlot,
+  muscleHasLever,
+  type ContactClass,
+  type MuscleLeverSlot,
 } from './types';
 import { evaluateGenome } from './neat';
 import {
@@ -39,6 +53,12 @@ import {
 } from './hingeStops';
 import type { RuntimeSolidBody } from './types';
 import {
+  BuiltInRewardRecipe,
+  getJumpSpeedRewardCoeffs,
+  getSpeedRewardCoeffs,
+  JumpSpeedRewardCoeffs,
+} from './builtInRewardCoeffs';
+import {
   GROUND_Y,
   WORLD_GRAVITY,
   LENGTH_ACTUATION_EPS_PX,
@@ -51,6 +71,7 @@ import {
   OBSTACLE_COLLISION_PASSES,
   COLLISION_SWEEP_STEP,
   AGENT_SPAWN_X,
+  HOOP_FINISH_OFFSET_BASE,
   ARENA_SCREEN_WIDTH,
   COURSE_START_X,
   TYPICAL_NODE_RADIUS,
@@ -64,10 +85,16 @@ import {
   WALK_STEP_MIN_INTERVAL,
   WALK_STEP_POINTS,
   WALK_ALTERNATE_BONUS,
+  LOCOMOTION_SLIDE_SHAPING,
+  LOCOMOTION_SAME_FOOT_SCALE,
   SHUFFLE_OSC_WEIGHT,
   HOP_CHAIN_GROUND_MAX,
   JUMP_MIN_CLEARANCE,
   JUMP_MIN_FRAMES,
+  GAP_PRE_JUMP_ZONE_PX,
+  GAP_PRE_JUMP_BONUS,
+  GAP_CLEAR_SPEED_MUL,
+  GAP_ATTEMPT_SPEED_MUL,
   measureNodeExtents,
   flightRewardMinClearance,
   jumpRewardMinClearance,
@@ -75,8 +102,28 @@ import {
   flightLandCeiling,
   glideCorridorBand,
   FLIGHT_MIN_CLEARANCE_FLOOR,
-  HOOP_FINISH_OFFSET_BASE,
+  FLIGHT_EXCESS_PEAK_MIN,
+  SPEED_MIN_TRAVEL_FLOOR,
+  UPRIGHT_SCORE_GOOD,
+  PARKING_UPRIGHT_FLOOR,
+  UPRIGHT_NORM_REFERENCE_FLOOR,
+  TYPICAL_BODY_HEIGHT,
+  BOX_PUSH_NEAR_PX,
+  BOX_PUSH_FALLOFF_PX,
+  CLEAR_BAR_APPROACH_LEAD_PX,
+  CLEAR_BAR_APPROACH_WIDTH_PX,
+  MOTOR_LAUNCH_MIN_AIR_PX,
+  chuteTowerPlatformY,
+  effectiveTowerHeight,
+  CHUTE_TOWER_X,
+  CHUTE_TOWER_WIDTH,
 } from './physicsConstants';
+import {
+  BODY_OBS_LENGTH_DIVISOR,
+  BODY_OBS_SPEED_DIV_FAST,
+  BODY_OBS_SPEED_DIV_MED,
+  BODY_OBS_SPEED_DIV_VERT,
+} from './creatureScale';
 import {
   buildGoalArena,
   buildGoalWorldObjects,
@@ -84,6 +131,8 @@ import {
   progressiveFactor,
   FINISH_LINE_X,
   makeFinish,
+  PARK_ZONE_X,
+  PARK_ZONE_WIDTH,
 } from './arenas';
 import {
   buildHoopTerrain,
@@ -180,6 +229,7 @@ function contactObstacleSets(
     rigidCapsule: solid.filter(
       obstacle =>
         obstacle.type === 'box' ||
+        obstacle.type === 'tower' ||
         obstacle.type === 'stair' ||
         obstacle.type === 'ramp'
     ),
@@ -205,21 +255,28 @@ export function snapshotAeroVelocities(nodes: PhysicsNode[]) {
 }
 
 /**
- * Clamp commanded length change for hard variable struts / hard slaves
- * (px per tick). Telescopes use the global stroke-relative budget; pistons
- * use authored extend/retract rates.
+ * Clamp commanded length change (px per tick).
+ * Soft muscles: optional authored / creature softMaxDelta (D150; null = unlimited).
+ * Pistons: authored extend/retract rates (legacy telescope budget is the seed).
  */
-function rateLimitHardLengthTarget(
+function rateLimitLengthTarget(
   muscle: PhysicsMuscle,
-  desired: number
+  desired: number,
+  blueprint?: Creature['blueprint'] | null
 ): number {
-  const clamped = Math.max(muscle.minLength, Math.min(muscle.maxLength, desired));
-  // Soft springs are not rate-limited.
-  if (resolveLinkKind(muscle) === 'muscle' && !isHardLengthConstraint(muscle)) {
-    return clamped;
+  // Normalize bounds — imported blueprints can carry minLength > maxLength,
+  // which would otherwise pin the clamp to minLength and let retract commands
+  // ratchet the target upward.
+  const lo = Math.min(muscle.minLength, muscle.maxLength);
+  const hi = Math.max(muscle.minLength, muscle.maxLength);
+  const clamped = Math.max(lo, Math.min(hi, desired));
+  const prev = muscle.targetLength;
+  if (resolveLinkKind(muscle) === 'muscle') {
+    const budget = resolveSoftMuscleMaxDelta(muscle, blueprint);
+    if (budget == null) return clamped;
+    return Math.max(prev - budget, Math.min(prev + budget, clamped));
   }
   if (!isHardLengthConstraint(muscle)) return clamped;
-  const prev = muscle.targetLength;
   let maxDelta: number;
   if (isPiston(muscle)) {
     const rates = pistonRates(muscle);
@@ -267,6 +324,8 @@ export function spawnCreature(
     | 'episodeFrames'
     | 'fellInPit'
     | 'gapCleared'
+    | 'gapSpanFraction'
+    | 'gapPreJump'
     | 'crossedFinish'
     | 'finishFrame'
     | 'checkpointReached'
@@ -311,9 +370,10 @@ export function spawnCreature(
   spawnX: number,
   spawnY: number,
   goal?: EvolutionGoal,
-  difficulty = 1
+  difficulty = 1,
+  arena?: Partial<import('./types').ArenaModifiers>
 ): Creature {
-  const { blueprint } = creature;
+  const blueprint = normalizeCreatureBlueprint(creature.blueprint);
   const nodes: PhysicsNode[] = blueprint.nodes.map((n, idx) => {
     const relPos = blueprint.relativePositions[idx] || { x: 0, y: 0 };
     const x = spawnX + relPos.x;
@@ -333,15 +393,24 @@ export function spawnCreature(
       vx: 0,
       vy: 0,
       isGround: false,
+      contactClass: CONTACT_NONE,
       spinAngle: 0,
     };
   });
 
-  const muscles: PhysicsMuscle[] = blueprint.muscles.map(m => ({
-    ...m,
-    targetLength: m.originalLength,
-    _constraintTargetSeen: m.originalLength,
-  }));
+  const muscles: PhysicsMuscle[] = blueprint.muscles.map(m => {
+    // Seed the command inside the stroke. Some authored bodies carry a rest
+    // length outside [minLength, maxLength]; an illegal initial target makes
+    // the first ticks fight the clamp and pop to a bound on the first command.
+    const lo = Math.min(m.minLength, m.maxLength);
+    const hi = Math.max(m.minLength, m.maxLength);
+    const seedTarget = Math.max(lo, Math.min(hi, m.originalLength));
+    return {
+      ...m,
+      targetLength: seedTarget,
+      _constraintTargetSeen: seedTarget,
+    };
+  });
 
   const solidBodies = buildRuntimeSolidBodies(blueprint.solidSegments, nodes);
 
@@ -375,7 +444,23 @@ export function spawnCreature(
 
   // Cliff Launch removed (D060) — Para Ramp uses grounded spawn on the runway.
 
-  const skipGroundPlant = goal === EvolutionGoal.MOTOR_LOOP;
+  const skipGroundPlant =
+    goal === EvolutionGoal.MOTOR_LOOP || goal === EvolutionGoal.CHUTE_DESCENT;
+
+  if (goal === EvolutionGoal.CHUTE_DESCENT) {
+    const platformY = chuteTowerPlatformY({ ...arena, difficulty });
+    const towerCenterX = CHUTE_TOWER_X + CHUTE_TOWER_WIDTH / 2;
+    const extents = measureNodeExtents(nodes);
+    const dx = towerCenterX - (extents.minX + extents.maxX) / 2;
+    const dy = platformY - extents.maxY - 2;
+    for (const n of nodes) {
+      n.x += dx;
+      n.y += dy;
+      n.oldX = n.x;
+      n.oldY = n.y;
+    }
+  }
+
   settleSpawnOnGround(
     nodes,
     muscles,
@@ -401,6 +486,7 @@ export function spawnCreature(
 
   return {
     ...creature,
+    blueprint,
     paraPilot,
     paraPhase: paraPilot ? ('runUp' as const) : undefined,
     paraBlendFrames: 0,
@@ -488,6 +574,8 @@ export function spawnCreature(
     episodeFrames: 0,
     fellInPit: false,
     gapCleared: false,
+    gapSpanFraction: 0,
+    gapPreJump: false,
     aerialCrossingLanded: false,
     crossedFinish: false,
     finishFrame: undefined,
@@ -561,7 +649,7 @@ export function spawnCreature(
     landClimbScore: 0,
     landDescentScore: 0,
     landOvershootPenalty: 0,
-    landReachedCeiling: false,
+    landReachedCeiling: goal === EvolutionGoal.CHUTE_DESCENT,
     landBeganDescent: false,
     sailReefedSpeedPeak: 0,
     sailDeploySpeed: 0,
@@ -608,6 +696,7 @@ export function spawnCreature(
     jumpAcrobaticsBestBoutScore: 0,
     flightAcrobaticsBestBoutScore: 0,
     flightLandBestBoutScore: 0,
+    chuteDescentBestScore: 0,
     privateWorld,
     gaitHistory: muscles.map(() => []),
     episodeMinX: startX,
@@ -632,6 +721,12 @@ function applyWind(nodes: PhysicsNode[], config: SimulationConfig, simTime: numb
   for (const node of nodes) {
     node.x += force / Math.max(0.4, node.mass);
   }
+}
+
+/** Record support + C2 contact class without changing force semantics. */
+function plantContact(node: PhysicsNode, cls: ContactClass): void {
+  node.isGround = true;
+  markNodeContact(node, cls);
 }
 
 function collideNodeCircle(
@@ -660,6 +755,7 @@ function collideNodeCircle(
     pushOther.x -= nx * overlap * otherShare;
     pushOther.y -= ny * overlap * otherShare;
   }
+  markNodeContact(node, CONTACT_OBJECT);
   return true;
 }
 
@@ -685,8 +781,10 @@ function resolveCircleAABBAt(
     node.x = target.x;
     node.y = target.y;
     if (target.ny < 0) {
-      node.isGround = true;
+      plantContact(node, CONTACT_STRUCTURE);
       if (withFriction) applySurfaceFriction(node, friction);
+    } else {
+      markNodeContact(node, CONTACT_STRUCTURE);
     }
     if (target.nx !== 0) node.oldX = node.x;
     if (target.ny !== 0) node.oldY = node.y;
@@ -708,8 +806,10 @@ function resolveCircleAABBAt(
   node.y = py + pushY;
 
   if (pushY < 0 && Math.abs(pushY) > Math.abs(pushX)) {
-    node.isGround = true;
+    plantContact(node, CONTACT_STRUCTURE);
     if (withFriction) applySurfaceFriction(node, friction);
+  } else {
+    markNodeContact(node, CONTACT_STRUCTURE);
   }
   // Kill residual Verlet velocity into the solid to reduce multi-frame tunneling
   if (pushX !== 0 || pushY !== 0) {
@@ -877,6 +977,7 @@ function collideNodeRampEndCap(node: PhysicsNode, obs: Obstacle): boolean {
   node.y = contactY + slideVy * remaining;
   node.oldX = node.x - slideVx;
   node.oldY = node.y - slideVy;
+  markNodeContact(node, CONTACT_STRUCTURE);
   return true;
 }
 
@@ -953,8 +1054,12 @@ export function collideNodeRamp(
   node.x = x1;
   node.y = Math.min(y1, surfaceY - verticalClearance);
   if (node.oldY > node.y) node.oldY = node.y;
-  node.isGround = ny < -0.2;
-  if (node.isGround && withFriction) applySurfaceFriction(node, friction);
+  if (ny < -0.2) {
+    plantContact(node, CONTACT_STRUCTURE);
+    if (withFriction) applySurfaceFriction(node, friction);
+  } else {
+    markNodeContact(node, CONTACT_STRUCTURE);
+  }
   return true;
 }
 
@@ -983,6 +1088,7 @@ export function collideNodePitLips(node: PhysicsNode, obstacles: Obstacle[]): bo
       node.x += nx * push;
       node.y += ny * push;
       if (Math.abs(nx) > 0.5) node.oldX = node.x;
+      markNodeContact(node, CONTACT_STRUCTURE);
       hit = true;
     }
   }
@@ -1011,7 +1117,7 @@ export function collideNodePit(
 
     node.y = floorY - node.radius;
     if (node.oldY > node.y) node.oldY = node.y;
-    node.isGround = true;
+    plantContact(node, CONTACT_STRUCTURE);
     if (withFriction) applySurfaceFriction(node, friction);
     hit = true;
   }
@@ -1083,6 +1189,8 @@ function collideRigidBoneRamp(
   const normalization = wa * wa + wb * wb;
   a.y += correctionY * wa / normalization;
   b.y += correctionY * wb / normalization;
+  markNodeContact(a, CONTACT_STRUCTURE);
+  markNodeContact(b, CONTACT_STRUCTURE);
   return true;
 }
 
@@ -1118,7 +1226,9 @@ function collideRigidBoneCapsules(
         continue;
       }
       if (obstacle.type === 'ramp') {
-        collideRigidBoneRamp(a, b, radius, obstacle);
+        if (collideRigidBoneRamp(a, b, radius, obstacle)) {
+          creature.linkContactStructure = true;
+        }
       } else {
         (sampledSolids ??= []).push(obstacle);
       }
@@ -1191,6 +1301,13 @@ function collideRigidBoneCapsules(
       a.y += correctionY * wa / normalization;
       b.x += correctionX * wb / normalization;
       b.y += correctionY * wb / normalization;
+      markNodeContact(a, CONTACT_STRUCTURE);
+      markNodeContact(b, CONTACT_STRUCTURE);
+      creature.linkContactStructure = true;
+      if (sample.isGround) {
+        plantContact(a, CONTACT_STRUCTURE);
+        plantContact(b, CONTACT_STRUCTURE);
+      }
     }
   }
 }
@@ -1224,7 +1341,7 @@ export function collideNodeStair(
       node.y = top - radius;
       // Kill downward Verlet momentum so the next frame does not re-penetrate
       if (node.oldY > node.y) node.oldY = node.y;
-      node.isGround = true;
+      plantContact(node, CONTACT_STRUCTURE);
       if (withFriction) applySurfaceFriction(node, friction);
       hit = true;
     }
@@ -1241,6 +1358,7 @@ export function collideNodeStair(
       node.isGround && node.x >= left && node.x <= right && Math.abs(foot - top) < 4;
     if (penetratingFace && fromLeft && !standingOnThisTread) {
       node.x = left - radius;
+      markNodeContact(node, CONTACT_STRUCTURE);
       hit = true;
     }
   }
@@ -1276,7 +1394,7 @@ function collideNodeLoop(
   // Preserve tangential Verlet velocity; kill radial penetration
   node.oldX = node.x - tx * prevTx;
   node.oldY = node.y - ty * prevTx;
-  node.isGround = true;
+  plantContact(node, CONTACT_STRUCTURE);
   if (withFriction) applySurfaceFriction(node, friction * 0.35);
   return true;
 }
@@ -1434,7 +1552,7 @@ function collideNodeTerrain(
   if (node.y >= surface - node.radius) {
     node.y = surface - node.radius;
     if (node.oldY > node.y) node.oldY = node.y;
-    node.isGround = true;
+    plantContact(node, CONTACT_FLOOR);
     if (withFriction) applySurfaceFriction(node, friction);
   }
 }
@@ -1467,6 +1585,10 @@ function stepWorldObject(
     stepHoop(obj, obstacles, gravity, groundFriction);
     return;
   }
+  if (obj.type === 'ball') {
+    stepBall(obj, obstacles, gravity, groundFriction);
+    return;
+  }
 
   const tempX = obj.x;
   const tempY = obj.y;
@@ -1479,7 +1601,8 @@ function stepWorldObject(
 
   const halfW = obj.width / 2;
   const halfH = obj.height / 2;
-  const bottom = obj.type === 'ball' ? obj.radius : halfH;
+  // Hoops and balls returned above — this path only steps box-like objects.
+  const bottom = halfH;
   const surface = groundYAt(obstacles, obj.x);
 
   if (obj.y >= surface - bottom) {
@@ -1499,29 +1622,14 @@ function stepWorldObject(
     const left = obs.x;
     const right = obs.x + obs.width;
     const top = obs.y;
-    const rightEdge = right;
-    if (obj.type === 'ball') {
-      const closestX = Math.max(left, Math.min(obj.x, rightEdge));
-      const closestY = Math.max(top, Math.min(obj.y, obs.y + obs.height));
-      const dx = obj.x - closestX;
-      const dy = obj.y - closestY;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
-      if (dist < obj.radius) {
-        const overlap = obj.radius - dist;
-        obj.x += (dx / dist) * overlap;
-        obj.y += (dy / dist) * overlap;
-        if (dy < 0) obj.oldY = obj.y;
-      }
-    } else {
-      const oLeft = obj.x - halfW;
-      const oRight = obj.x + halfW;
-      const oTop = obj.y - halfH;
-      const oBottom = obj.y + halfH;
-      if (oRight > left && oLeft < right && oBottom > top && oTop < obs.y + obs.height) {
-        const pushUp = oBottom - top;
-        obj.y -= pushUp;
-        obj.oldY = obj.y;
-      }
+    const oLeft = obj.x - halfW;
+    const oRight = obj.x + halfW;
+    const oTop = obj.y - halfH;
+    const oBottom = obj.y + halfH;
+    if (oRight > left && oLeft < right && oBottom > top && oTop < obs.y + obs.height) {
+      const pushUp = oBottom - top;
+      obj.y -= pushUp;
+      obj.oldY = obj.y;
     }
   }
 }
@@ -1584,6 +1692,63 @@ function stepHoop(
   hoop.angle = (hoop.angle ?? 0) - dx / Math.max(1, outerR);
 }
 
+/** Roll the ball on heightfield + boxes; integrate spin from arc length. */
+function stepBall(
+  ball: WorldObject,
+  obstacles: Obstacle[],
+  gravity: number,
+  groundFriction: number
+) {
+  const tempX = ball.x;
+  const tempY = ball.y;
+  let vx = (ball.x - ball.oldX) * 0.988;
+  let vy = (ball.y - ball.oldY) * 0.988;
+  const speed = Math.hypot(vx, vy);
+  if (speed > 10) {
+    vx = (vx / speed) * 10;
+    vy = (vy / speed) * 10;
+  }
+  ball.x += vx;
+  ball.y += vy + gravity;
+  ball.oldX = tempX;
+  ball.oldY = tempY;
+
+  const surface = groundYAt(obstacles, ball.x);
+  const foot = ball.y + ball.radius;
+  if (foot > surface) {
+    const sink = foot - surface;
+    ball.y -= sink;
+    if (ball.oldY > ball.y) ball.oldY = ball.y;
+    const hVx = ball.x - ball.oldX;
+    const rollDrag = 0.015;
+    ball.x = ball.oldX + hVx * (1 - rollDrag);
+    const slopeSample = 4;
+    const yL = groundYAt(obstacles, ball.x - slopeSample);
+    const yR = groundYAt(obstacles, ball.x + slopeSample);
+    const slope = (yR - yL) / (slopeSample * 2);
+    ball.x += slope * gravity * 0.55;
+    ball.angle = (ball.angle ?? 0) - (ball.x - ball.oldX) / Math.max(1, ball.radius);
+  }
+
+  for (const obs of obstacles) {
+    if (!ballObstacleBlocksObject(obs, ball)) continue;
+    const left = obs.x;
+    const right = obs.x + obs.width;
+    const top = obs.y;
+    const closestX = Math.max(left, Math.min(ball.x, right));
+    const closestY = Math.max(top, Math.min(ball.y, obs.y + obs.height));
+    const dx = ball.x - closestX;
+    const dy = ball.y - closestY;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+    if (dist < ball.radius) {
+      const overlap = ball.radius - dist;
+      ball.x += (dx / dist) * overlap;
+      ball.y += (dy / dist) * overlap;
+      if (dy < 0) ball.oldY = ball.y;
+    }
+  }
+}
+
 /**
  * Contain nodes inside the hoop rim and couple motor-wheel torque into roll.
  */
@@ -1621,7 +1786,7 @@ function resolveHoopContainment(
       // Soft reaction into the hoop (weight shift → roll)
       impulseX += nx * overlap * hoopShare * 0.45;
       impulseY += ny * overlap * hoopShare * 0.45;
-      node.isGround = true;
+      plantContact(node, CONTACT_OBJECT);
       const nodeVx = node.x - node.oldX;
       const nodeVy = node.y - node.oldY;
       const tang = nodeVx * tx + nodeVy * ty;
@@ -1632,7 +1797,7 @@ function resolveHoopContainment(
       impulseX += tx * damp * 0.2;
       impulseY += ty * damp * 0.2;
     } else if (dist > maxDist - 8) {
-      node.isGround = true;
+      plantContact(node, CONTACT_OBJECT);
     }
 
     // Positive drive → roll right: at the bottom, animal runs left (tx=-1)
@@ -1693,6 +1858,7 @@ function resolveCreatureObjectCollisions(
           node.y += ny * overlap * (obj.mass / totalMass);
           obj.x -= nx * overlap * (node.mass / totalMass);
           obj.y -= ny * overlap * (node.mass / totalMass);
+          markNodeContact(node, CONTACT_OBJECT);
         }
       }
     }
@@ -1735,8 +1901,8 @@ function targetCenter(obs: Obstacle): { x: number; y: number; r: number } {
 }
 
 function parkingUprightThreshold(creature: Creature): number {
-  const bodyH = creature.restBodyHeight ?? 40;
-  return Math.max(18, bodyH * 0.28);
+  const bodyH = creature.restBodyHeight ?? TYPICAL_BODY_HEIGHT;
+  return Math.max(PARKING_UPRIGHT_FLOOR, bodyH * 0.28);
 }
 
 function parkingPostureOk(creature: Creature): boolean {
@@ -1873,12 +2039,21 @@ function metricValue(
     }
     case 'box_push': {
       if (!box) return 0;
+      // Distance to crate AABB surface (not centre) — COM→centre vertical
+      // offset alone exceeds the world-scale near gate on short crates.
+      const halfW = Math.max(1, (box.width ?? 20) / 2);
+      const halfH = Math.max(1, (box.height ?? 20) / 2);
       let minDist = Infinity;
       for (const n of creature.nodes) {
-        const d = Math.hypot(n.x - box.x, n.y - box.y);
-        minDist = Math.min(minDist, d);
+        const dx = Math.max(0, Math.abs(n.x - box.x) - halfW);
+        const dy = Math.max(0, Math.abs(n.y - box.y) - halfH);
+        const d = Math.hypot(dx, dy) - n.radius;
+        minDist = Math.min(minDist, Math.max(0, d));
       }
-      const near = minDist < 60 ? 1 : Math.max(0, 1 - (minDist - 60) / 100);
+      const near =
+        minDist < BOX_PUSH_NEAR_PX
+          ? 1
+          : Math.max(0, 1 - (minDist - BOX_PUSH_NEAR_PX) / BOX_PUSH_FALLOFF_PX);
       return near * Math.max(0, box.x - box.startX);
     }
     case 'survival':
@@ -1936,9 +2111,18 @@ function clearBarFitness(creature: Creature, obstacles: Obstacle[]): number {
   );
   if (!bar) return jumpH;
   const barTop = bar.y;
-  const approach = Math.max(0, Math.min(1, (creature.currentX - (bar.x - 40)) / 80));
+  const approach = Math.max(
+    0,
+    Math.min(
+      1,
+      (creature.currentX - (bar.x - CLEAR_BAR_APPROACH_LEAD_PX)) /
+        CLEAR_BAR_APPROACH_WIDTH_PX
+    )
+  );
   const clearance = Math.max(0, jumpH - (GROUND_Y - barTop));
-  const clearBonus = creature.clearedBar ? 80 + clearance * 2 : clearance * 0.5 * approach;
+  const clearBonus = creature.clearedBar
+    ? 80 + clearance * 2
+    : clearance * 0.5 * approach;
   return jumpH * 0.35 + clearBonus;
 }
 
@@ -1972,7 +2156,7 @@ function flightHeightBoutScore(
   const mean = integral / frames;
   const excessMean = flightExcessClearance(mean, minClear);
   // Height only unlocks after a real airborne streak above the body-scaled floor.
-  if (frames < 12 || excessPeak < 1) return 0;
+  if (frames < 12 || excessPeak < FLIGHT_EXCESS_PEAK_MIN) return 0;
   const sustainGate = Math.min(1, Math.max(0, frames - 24) / 72);
   // Wing stroke evidence.
   const flapGate = Math.min(1, Math.max(0, flapFrames) / 28);
@@ -2144,6 +2328,18 @@ function flightLandFitness(creature: Creature): number {
   );
 }
 
+/** Tower parachute drop: controlled descent + soft landing on the pad. */
+function chuteDescentFitness(creature: Creature): number {
+  const descent = creature.landDescentScore ?? 0;
+  const land = creature.flightLandScore ?? 0;
+  const overshoot = creature.landOvershootPenalty ?? 0;
+  const streak = creature.flightStreak ?? 0;
+  return Math.max(
+    creature.chuteDescentBestScore ?? 0,
+    descent * 2.4 + land * 3.2 + Math.min(streak, 220) * 0.14 - overshoot * 1.5
+  );
+}
+
 function activeFlightLandBoutFitness(creature: Creature): number {
   const land = creature.flightLandScore ?? 0;
   const climb = creature.landClimbScore ?? 0;
@@ -2290,10 +2486,15 @@ function jumpSpeedBoutScore(
   peakSpeed: number,
   frames: number,
   peakClearance: number,
-  minClear = JUMP_MIN_CLEARANCE
+  minClear = JUMP_MIN_CLEARANCE,
+  coeffs: JumpSpeedRewardCoeffs = getJumpSpeedRewardCoeffs()
 ): number {
   if (frames < JUMP_MIN_FRAMES || peakClearance < minClear) return 0;
-  return peakSpeed * 50 + Math.min(peakClearance, minClear * 3) * 0.3 + Math.min(frames, 80) * 0.35;
+  return (
+    peakSpeed * coeffs.peakSpeed +
+    Math.min(peakClearance, minClear * 3) * coeffs.clearance +
+    Math.min(frames, 80) * coeffs.airtime
+  );
 }
 
 function recordHopBout(
@@ -2336,6 +2537,7 @@ function revokeLastIsolatedJumpToHop(creature: Creature): void {
   }
   if ((creature.jumpSpeedBestBoutScore ?? 0) === snap.speedScore) {
     creature.jumpSpeedBestBoutScore = 0;
+    creature.jumpSpeedBestBoutMetrics = undefined;
   }
   if ((creature.jumpAcrobaticsBestBoutScore ?? 0) === snap.acroScore) {
     creature.jumpAcrobaticsBestBoutScore = 0;
@@ -2354,7 +2556,10 @@ function revokeLastIsolatedJumpToHop(creature: Creature): void {
   creature.lastIsolatedJumpSnapshot = undefined;
 }
 
-function finalizeIsolatedOrHopBout(creature: Creature): void {
+function finalizeIsolatedOrHopBout(
+  creature: Creature,
+  recipe?: BuiltInRewardRecipe
+): void {
   const frames = creature.jumpHangBoutFrames ?? 0;
   const peak =
     creature.aerialBoutPeakLowestClearance ??
@@ -2365,6 +2570,7 @@ function finalizeIsolatedOrHopBout(creature: Creature): void {
   const peakSpeed = creature.aerialBoutPeakSpeed ?? 0;
   const isHop = creature.aerialBoutIsHop === true;
   const jumpMin = creatureJumpMinClearance(creature);
+  const jumpSpeedCoeffs = getJumpSpeedRewardCoeffs(recipe);
 
   if (frames <= 0) return;
 
@@ -2395,11 +2601,21 @@ function finalizeIsolatedOrHopBout(creature: Creature): void {
     creature.jumpHeightBestClearance ?? 0,
     heightClearance
   );
-  const speedScore = jumpSpeedBoutScore(peakSpeed, frames, peak, jumpMin);
-  creature.jumpSpeedBestBoutScore = Math.max(
-    creature.jumpSpeedBestBoutScore ?? 0,
-    speedScore
+  const speedScore = jumpSpeedBoutScore(
+    peakSpeed,
+    frames,
+    peak,
+    jumpMin,
+    jumpSpeedCoeffs
   );
+  if (speedScore >= (creature.jumpSpeedBestBoutScore ?? 0)) {
+    creature.jumpSpeedBestBoutScore = speedScore;
+    creature.jumpSpeedBestBoutMetrics = {
+      peakSpeed,
+      frames,
+      peakClearance: peak,
+    };
+  }
 
   creature.lastIsolatedJumpSnapshot = {
     hangScore,
@@ -2619,11 +2835,20 @@ function locomotionDirectionFitness(
       ? Math.max(0, creature.currentX - creature.startX)
       : Math.max(0, creature.startX - creature.currentX);
 
-  // Step-strict gate (D137/D139): no alternating foot transfer → no score.
-  if (stepCount <= 0 || altCount <= 0) return 0;
+  // No swing-gated plants: tiny forward shaping only (kills leftward bias under
+  // selection; vibration scooters stay far below real walkers).
+  if (stepCount <= 0) {
+    return body * LOCOMOTION_SLIDE_SHAPING;
+  }
 
   // Primary reward is forward body travel; stride ledger cannot exceed body (D129).
   const travel = strides > 0 ? Math.min(body, strides) : body;
+
+  // Same-foot plants prove swing gait but not transfer — partial credit so
+  // bipeds can discover alternation (D139 still owns the full unlock).
+  if (altCount <= 0) {
+    return travel * LOCOMOTION_SAME_FOOT_SCALE;
+  }
 
   // Modest alternating-gait bonus — capped so distance always wins selection.
   const altBonus = Math.min(altCount * WALK_ALTERNATE_BONUS, travel);
@@ -2690,41 +2915,61 @@ function settleSpawnOnGround(
       ) {
         continue;
       }
-      const nodeA = nodes[muscle.nodeA];
-      const nodeB = nodes[muscle.nodeB];
-      if (!nodeA || !nodeB) continue;
-
-      const dx = nodeB.x - nodeA.x;
-      const dy = nodeB.y - nodeA.y;
-      const currentLength = Math.sqrt(dx * dx + dy * dy) || 0.001;
-      const target = muscle.targetLength;
-      const diff = target - currentLength;
+      if (!nodes[muscle.nodeA] || !nodes[muscle.nodeB]) continue;
       const strength = isHardLengthConstraint(muscle) ? 1.0 : muscle.strength;
       const stepScale = isHardLengthConstraint(muscle) ? 1.0 : 0.5;
-      const percent = (diff / currentLength) * strength * stepScale;
-      const offsetX = dx * percent;
-      const offsetY = dy * percent;
-
-      const totalMass = nodeA.mass + nodeB.mass;
-      const factorA = nodeB.mass / totalMass;
-      const factorB = nodeA.mass / totalMass;
-
-      applyLengthCorrectionDelta(
-        nodeA,
-        nodeB,
-        offsetX * factorA,
-        offsetY * factorA,
-        offsetX * factorB,
-        offsetY * factorB,
+      projectMuscleLengthConstraint(
         muscle,
-        diff
+        muscles,
+        nodes,
+        strength,
+        stepScale,
+        hingeActive
       );
     }
     if (solidBodies && solidBodies.length > 0) {
       projectSolidBodies(nodes, solidBodies, { preserveVelocity: true });
     }
-    if (hingeActive) {
+  }
+  if (hingeActive) {
+    for (let iter = 0; iter < 10; iter += 1) {
       projectHingeStops(nodes, muscles);
+      for (const muscle of muscles) {
+        if (!isHardLengthConstraint(muscle)) continue;
+        if (
+          solidMember &&
+          isLinkWhollyInsideSolid(muscle.nodeA, muscle.nodeB, solidMember)
+        ) {
+          continue;
+        }
+        const nodeA = nodes[muscle.nodeA];
+        const nodeB = nodes[muscle.nodeB];
+        if (!nodeA || !nodeB) continue;
+        const dx = nodeB.x - nodeA.x;
+        const dy = nodeB.y - nodeA.y;
+        const currentLength = Math.sqrt(dx * dx + dy * dy) || 0.001;
+        const diff = muscle.targetLength - currentLength;
+        const percent = diff / currentLength;
+        const offsetX = dx * percent;
+        const offsetY = dy * percent;
+        const totalMass = nodeA.mass + nodeB.mass;
+        const factorA = nodeB.mass / totalMass;
+        const factorB = nodeA.mass / totalMass;
+        applyLengthCorrectionDelta(
+          nodeA,
+          nodeB,
+          offsetX * factorA,
+          offsetY * factorA,
+          offsetX * factorB,
+          offsetY * factorB,
+          muscle,
+          diff,
+          true
+        );
+      }
+      if (solidBodies && solidBodies.length > 0) {
+        projectSolidBodies(nodes, solidBodies, { preserveVelocity: true });
+      }
     }
   }
 
@@ -2773,7 +3018,7 @@ function replantFlatGroundContacts(
       node.oldX = node.x - vx;
     }
     node.oldY = node.y;
-    node.isGround = true;
+    plantContact(node, CONTACT_FLOOR);
   }
 }
 
@@ -2787,7 +3032,7 @@ function preConstraintFlatGroundContact(
   for (const node of nodes) {
     if (node.y + node.radius < GROUND_Y - 0.5) continue;
     node.y = GROUND_Y - node.radius;
-    node.isGround = true;
+    plantContact(node, CONTACT_FLOOR);
     if (node.isWheel) {
       const vx = node.x - node.oldX;
       node.oldX = node.x - vx * 0.98;
@@ -2822,6 +3067,235 @@ function markLengthActuationForTick(muscles: PhysicsMuscle[]): void {
   }
 }
 
+export interface MuscleAnchorWeight {
+  nodeIndex: number;
+  w: number;
+}
+
+export interface ResolvedMuscleEnd {
+  x: number;
+  y: number;
+  weights: MuscleAnchorWeight[];
+}
+
+export interface ResolvedMuscleAnchors {
+  endA: ResolvedMuscleEnd;
+  endB: ResolvedMuscleEnd;
+  length: number;
+  ux: number;
+  uy: number;
+}
+
+function resolveLeverEnd(
+  nodeIndex: number,
+  leverBone: number | undefined,
+  leverSlot: MuscleLeverSlot | undefined,
+  muscles: PhysicsMuscle[],
+  nodes: PhysicsNode[]
+): ResolvedMuscleEnd {
+  if (
+    leverBone !== undefined &&
+    isValidLeverSlot(leverSlot) &&
+    leverBone >= 0 &&
+    leverBone < muscles.length
+  ) {
+    const bone = muscles[leverBone];
+    if (bone && isRigidBone(bone)) {
+      const n0 = nodes[bone.nodeA];
+      const n1 = nodes[bone.nodeB];
+      if (n0 && n1) {
+        const t = LEVER_SLOT_T[leverSlot];
+        return {
+          x: n0.x * (1 - t) + n1.x * t,
+          y: n0.y * (1 - t) + n1.y * t,
+          weights: [
+            { nodeIndex: bone.nodeA, w: 1 - t },
+            { nodeIndex: bone.nodeB, w: t },
+          ],
+        };
+      }
+    }
+  }
+  const n = nodes[nodeIndex];
+  return {
+    x: n?.x ?? 0,
+    y: n?.y ?? 0,
+    weights: [{ nodeIndex, w: 1 }],
+  };
+}
+
+/**
+ * Resolve soft-muscle (or any link) constraint anchors. Without lever fields this
+ * matches nodeA/nodeB centers. With D151 levers, an end is a virtual point on a
+ * host rigid bone.
+ */
+export function resolveMuscleAnchors(
+  muscle: PhysicsMuscle,
+  muscles: PhysicsMuscle[],
+  nodes: PhysicsNode[]
+): ResolvedMuscleAnchors {
+  const endA = resolveLeverEnd(
+    muscle.nodeA,
+    muscle.leverBoneA,
+    muscle.leverSlotA,
+    muscles,
+    nodes
+  );
+  const endB = resolveLeverEnd(
+    muscle.nodeB,
+    muscle.leverBoneB,
+    muscle.leverSlotB,
+    muscles,
+    nodes
+  );
+  const dx = endB.x - endA.x;
+  const dy = endB.y - endA.y;
+  const length = Math.sqrt(dx * dx + dy * dy) || 0.001;
+  return {
+    endA,
+    endB,
+    length,
+    ux: dx / length,
+    uy: dy / length,
+  };
+}
+
+function endInverseMass(
+  end: ResolvedMuscleEnd,
+  nodes: PhysicsNode[]
+): number {
+  let inv = 0;
+  for (const { nodeIndex, w } of end.weights) {
+    const n = nodes[nodeIndex];
+    if (!n) continue;
+    inv += (w * w) / Math.max(1e-9, n.mass);
+  }
+  return inv || 1e-9;
+}
+
+/** Move a virtual anchor by (dx, dy); distributes to weighted nodes. */
+function displaceAnchorEnd(
+  end: ResolvedMuscleEnd,
+  nodes: PhysicsNode[],
+  dx: number,
+  dy: number,
+  preserveVelocity: boolean,
+  plantedSkip: Set<number>
+): void {
+  const invEff = endInverseMass(end, nodes);
+  for (const { nodeIndex, w } of end.weights) {
+    if (plantedSkip.has(nodeIndex)) continue;
+    const n = nodes[nodeIndex];
+    if (!n) continue;
+    const scale = w / Math.max(1e-9, n.mass) / invEff;
+    const ddx = dx * scale;
+    const ddy = dy * scale;
+    n.x += ddx;
+    n.y += ddy;
+    if (preserveVelocity && !n.isGround) {
+      n.oldX += ddx;
+      n.oldY += ddy;
+    }
+  }
+}
+
+/**
+ * Project a link toward targetLength using resolved anchors (D151 levers or
+ * classic two-node). No-lever path matches prior mass-weighted endpoint moves.
+ */
+function projectMuscleLengthConstraint(
+  muscle: PhysicsMuscle,
+  muscles: PhysicsMuscle[],
+  nodes: PhysicsNode[],
+  strength: number,
+  stepScale: number,
+  forcePreserveVelocity = false
+): void {
+  const anchors = resolveMuscleAnchors(muscle, muscles, nodes);
+  const currentLength = anchors.length;
+  const diff = muscle.targetLength - currentLength;
+  const percent = (diff / currentLength) * strength * stepScale;
+  const offsetX = (anchors.endB.x - anchors.endA.x) * percent;
+  const offsetY = (anchors.endB.y - anchors.endA.y) * percent;
+
+  // Fast path: classic two single-node ends — bit-identical to prior solver.
+  if (!muscleHasLever(muscle)) {
+    const nodeA = nodes[muscle.nodeA];
+    const nodeB = nodes[muscle.nodeB];
+    if (!nodeA || !nodeB) return;
+    const totalMass = nodeA.mass + nodeB.mass;
+    const factorA = nodeB.mass / totalMass;
+    const factorB = nodeA.mass / totalMass;
+    applyLengthCorrectionDelta(
+      nodeA,
+      nodeB,
+      offsetX * factorA,
+      offsetY * factorA,
+      offsetX * factorB,
+      offsetY * factorB,
+      muscle,
+      diff,
+      forcePreserveVelocity
+    );
+    return;
+  }
+
+  const invA = endInverseMass(anchors.endA, nodes);
+  const invB = endInverseMass(anchors.endB, nodes);
+  const invSum = invA + invB;
+  let factorA = invA / invSum;
+  let factorB = invB / invSum;
+
+  // Hinge-stop plant: put the whole correction on the free end (D138).
+  const plantedSkip = new Set<number>();
+  if (forcePreserveVelocity) {
+    const aPlanted = anchors.endA.weights.every(w => nodes[w.nodeIndex]?.isGround);
+    const bPlanted = anchors.endB.weights.every(w => nodes[w.nodeIndex]?.isGround);
+    if (aPlanted && bPlanted) return;
+    if (aPlanted) {
+      factorA = 0;
+      factorB = 1;
+      for (const w of anchors.endA.weights) plantedSkip.add(w.nodeIndex);
+    } else if (bPlanted) {
+      factorA = 1;
+      factorB = 0;
+      for (const w of anchors.endB.weights) plantedSkip.add(w.nodeIndex);
+    }
+  }
+
+  // D142: preserve Verlet history only for held commands near target. An
+  // actively actuating link (targetLength changed this tick) must use
+  // position-only correction so the command couples momentum into the body.
+  const preserve =
+    forcePreserveVelocity ||
+    isRigidBone(muscle) ||
+    (!muscle._actuatingThisTick && Math.abs(diff) < LENGTH_ACTUATION_EPS_PX);
+
+  // End A moves opposite the B−A offset (same sign convention as applyLengthCorrectionDelta).
+  displaceAnchorEnd(
+    anchors.endA,
+    nodes,
+    -offsetX * factorA,
+    -offsetY * factorA,
+    preserve,
+    plantedSkip
+  );
+  displaceAnchorEnd(
+    anchors.endB,
+    nodes,
+    offsetX * factorB,
+    offsetY * factorB,
+    preserve,
+    plantedSkip
+  );
+
+  if (isRigidBone(muscle)) {
+    const nodeA = nodes[muscle.nodeA];
+    const nodeB = nodes[muscle.nodeB];
+    if (nodeA && nodeB) projectRigidBoneAxialVelocity(nodeA, nodeB);
+  }
+}
+
 function applyLengthCorrectionDelta(
   nodeA: PhysicsNode,
   nodeB: PhysicsNode,
@@ -2830,21 +3304,57 @@ function applyLengthCorrectionDelta(
   dBx: number,
   dBy: number,
   muscle: PhysicsMuscle,
-  lengthErrorPx: number
+  lengthErrorPx: number,
+  /** When hinge stops are active, all length snaps must preserve Verlet velocity (D138). */
+  forcePreserveVelocity = false
 ): void {
-  nodeA.x -= dAx;
-  nodeA.y -= dAy;
-  nodeB.x += dBx;
-  nodeB.y += dBy;
+  // With hinge stops, never yank a planted node — put the whole correction on the free end.
+  // (Both planted → skip; avoids foot/ground fighting the 90° stop into a launch.)
+  let aMul = 1;
+  let bMul = 1;
+  if (forcePreserveVelocity) {
+    const pinA = !!nodeA.isGround;
+    const pinB = !!nodeB.isGround;
+    if (pinA && pinB) return;
+    if (pinA) {
+      aMul = 0;
+      bMul = 1;
+      // Free end takes the full separation delta (A's share + B's share).
+      dBx += dAx;
+      dBy += dAy;
+      dAx = 0;
+      dAy = 0;
+    } else if (pinB) {
+      aMul = 1;
+      bMul = 0;
+      dAx += dBx;
+      dAy += dBy;
+      dBx = 0;
+      dBy = 0;
+    }
+  }
 
+  nodeA.x -= dAx * aMul;
+  nodeA.y -= dAy * aMul;
+  nodeB.x += dBx * bMul;
+  nodeB.y += dBy * bMul;
+
+  // D142: an actuating link (targetLength changed this tick) never preserves —
+  // see markLengthActuationForTick.
   const preserve =
-    isRigidBone(muscle) || Math.abs(lengthErrorPx) < LENGTH_ACTUATION_EPS_PX;
+    forcePreserveVelocity ||
+    isRigidBone(muscle) ||
+    (!muscle._actuatingThisTick && Math.abs(lengthErrorPx) < LENGTH_ACTUATION_EPS_PX);
 
   if (preserve) {
-    nodeA.oldX -= dAx;
-    nodeA.oldY -= dAy;
-    nodeB.oldX += dBx;
-    nodeB.oldY += dBy;
+    if (!nodeA.isGround) {
+      nodeA.oldX -= dAx * aMul;
+      nodeA.oldY -= dAy * aMul;
+    }
+    if (!nodeB.isGround) {
+      nodeB.oldX += dBx * bMul;
+      nodeB.oldY += dBy * bMul;
+    }
   }
   if (isRigidBone(muscle)) {
     projectRigidBoneAxialVelocity(nodeA, nodeB);
@@ -2898,14 +3408,19 @@ function distributeMotorDriveThroughRigidBones(
       }
       if (!other || other.isMotorWheel) continue;
       // Mass-weighted share: light chassis picks up more of the push.
+      // Denominator must use true masses (world units ~0.001) — a legacy 0.35
+      // floor zeroed chassis coupling after CREATURE_WORLD_SCALE.
       const share =
-        (drive * 0.55 * node.mass) / Math.max(0.35, node.mass + other.mass);
+        (drive * 0.55 * node.mass) / Math.max(1e-9, node.mass + other.mass);
       other.oldX -= share;
     }
   }
 }
 
-function projectHardLengthConstraints(creature: Creature): void {
+function projectHardLengthConstraints(
+  creature: Creature,
+  forcePreserveVelocity = false
+): void {
   const membership =
     creature.solidBodies && creature.solidBodies.length > 0
       ? solidMembershipFromBodies(creature.solidBodies, creature.nodes)
@@ -2939,7 +3454,8 @@ function projectHardLengthConstraints(creature: Creature): void {
       offsetX * factorB,
       offsetY * factorB,
       muscle,
-      diff
+      diff,
+      forcePreserveVelocity
     );
   }
 }
@@ -2981,7 +3497,8 @@ function resolveSolidFlatGround(
   creature: Creature,
   solidsThatHitGround: ReadonlySet<string>,
   enabled: boolean,
-  terrainActive: boolean
+  terrainActive: boolean,
+  groundFriction = 0.8
 ): void {
   if (terrainActive) return;
   const solids = creature.solidBodies;
@@ -3015,9 +3532,15 @@ function resolveSolidFlatGround(
       const node = creature.nodes[idx];
       if (!node || node.isWheel) continue;
       if (node.y + node.radius >= GROUND_Y - 0.75) {
-        node.isGround = true;
+        plantContact(node, CONTACT_FLOOR);
+        // Damp via oldX only — moving x per-node would break the plate shape.
+        // Match point-node grip; the old 0.92 retention left plates skating.
+        const grip = Math.min(
+          1,
+          Math.max(0, (groundFriction + (node.friction ?? 0.5)) * 0.5)
+        );
         const vx = node.x - node.oldX;
-        node.oldX = node.x - vx * 0.92;
+        node.oldX = node.x - vx * (1 - grip);
         node.oldY = node.y;
       }
     }
@@ -3078,7 +3601,7 @@ function normalizedUprightPosture(creature: Creature): number {
   const raw =
     Math.max(0, GROUND_Y - centerY) *
     (0.5 + Math.min(1.5, height / width));
-  const reference = Math.max(40, (GROUND_Y - creature.startY) * 2);
+  const reference = Math.max(UPRIGHT_NORM_REFERENCE_FLOOR, (GROUND_Y - creature.startY) * 2);
   return Math.max(0, Math.min(1, raw / reference));
 }
 
@@ -3148,8 +3671,12 @@ function jumpLeftFitness(creature: Creature): number {
 }
 
 /** Peak airspeed during an isolated jump. */
-function jumpSpeedFitness(creature: Creature): number {
+function jumpSpeedFitness(
+  creature: Creature,
+  recipe?: BuiltInRewardRecipe
+): number {
   const jumpMin = creatureJumpMinClearance(creature);
+  const coeffs = getJumpSpeedRewardCoeffs(recipe);
   const live =
     creature.aerialBoutIsHop
       ? 0
@@ -3157,9 +3684,20 @@ function jumpSpeedFitness(creature: Creature): number {
           creature.aerialBoutPeakSpeed ?? 0,
           creature.jumpHangBoutFrames ?? 0,
           creature.aerialBoutPeakLowestClearance ?? 0,
-          jumpMin
+          jumpMin,
+          coeffs
         );
-  return Math.max(creature.jumpSpeedBestBoutScore ?? 0, live);
+  const metrics = creature.jumpSpeedBestBoutMetrics;
+  const best = metrics
+    ? jumpSpeedBoutScore(
+        metrics.peakSpeed,
+        metrics.frames,
+        metrics.peakClearance,
+        jumpMin,
+        coeffs
+      )
+    : (creature.jumpSpeedBestBoutScore ?? 0);
+  return Math.max(best, live);
 }
 
 /** Jump flips / rotation while airborne from an isolated jump. */
@@ -3225,12 +3763,16 @@ function motorRampFitness(creature: Creature): number {
   return rampH * 2.5 + forward * 0.4;
 }
 
-function speedFitness(creature: Creature): number {
+function speedFitness(
+  creature: Creature,
+  recipe?: BuiltInRewardRecipe
+): number {
+  const coeffs = getSpeedRewardCoeffs(recipe);
   const peak = creature.peakSupportedSpeed ?? creature.peakSpeed ?? 0;
   const distance = Math.max(0, creature.currentX - creature.startX);
-  const minTravel = Math.max(40, (creature.restBodyWidth ?? 0) * 0.5);
-  if (distance < minTravel) return distance * 0.15;
-  return peak * 45 + distance * 0.35;
+  const minTravel = Math.max(SPEED_MIN_TRAVEL_FLOOR, (creature.restBodyWidth ?? 0) * 0.5);
+  if (distance < minTravel) return distance * coeffs.belowGateDistance;
+  return peak * coeffs.peak + distance * coeffs.distance;
 }
 
 function motorDriveFitness(creature: Creature): number {
@@ -3243,11 +3785,30 @@ function motorIceFitness(creature: Creature): number {
   return iceDist * 1.25 + forward * 0.12;
 }
 
+/**
+ * Clear Gap: full-clear bonus + how far the leading edge spanned the pit
+ * (including failed jumps) + pre-lip wheel-jump incentive + approach speed
+ * (gated so flat sprinting away from the pit cannot farm it). Falling guts
+ * approach farming but keeps span / pre-jump / speed credit so jumping into
+ * the gap beats driving off the near lip.
+ */
 function gapFitness(creature: Creature): number {
   const forward = Math.max(0, creature.currentX - creature.startX);
-  if (creature.fellInPit) return forward * 0.05;
+  const span = Math.max(0, Math.min(1, creature.gapSpanFraction ?? 0));
   const clear = creature.gapCleared ? 180 : 0;
-  return clear + forward * 0.35;
+  // Partial span only when not fully cleared (clear already implies span = 1).
+  const spanScore = creature.gapCleared ? 0 : span * 100;
+  const preJump = creature.gapPreJump ? GAP_PRE_JUMP_BONUS : 0;
+  const approach = creature.fellInPit
+    ? Math.min(forward, 250) * 0.08
+    : forward * 0.35;
+  const peak = creature.peakSupportedSpeed ?? creature.peakSpeed ?? 0;
+  const speedMul = creature.gapCleared
+    ? GAP_CLEAR_SPEED_MUL
+    : span > 0 || creature.gapPreJump
+      ? GAP_ATTEMPT_SPEED_MUL
+      : 0;
+  return clear + spanScore + preJump + approach + peak * speedMul;
 }
 
 /**
@@ -3326,7 +3887,7 @@ function timeTrialFitness(creature: Creature, finishX = FINISH_LINE_X): number {
 function landSpeedFitness(creature: Creature): number {
   const peak = creature.peakLandSpeed ?? 0;
   const distance = Math.max(0, creature.currentX - creature.startX);
-  const minTravel = Math.max(40, (creature.restBodyWidth ?? 0) * 0.5);
+  const minTravel = Math.max(SPEED_MIN_TRAVEL_FLOOR, (creature.restBodyWidth ?? 0) * 0.5);
   if (distance < minTravel) return distance * 0.15;
   return peak * 55 + Math.min(distance, 800) * 0.2;
 }
@@ -3342,8 +3903,11 @@ function parkingFitness(creature: Creature, obstacles: Obstacle[] = []): number 
   const zone = obstacles.find(o => o.type === 'finish' && o.label === 'PARK');
   const zoneCenter = zone
     ? zone.x + (zone.zoneWidth ?? zone.width) / 2
-    : COURSE_START_X + 420 + 70;
-  const approach = Math.max(0, 320 - Math.abs(creature.currentX - zoneCenter));
+    : PARK_ZONE_X + PARK_ZONE_WIDTH / 2;
+  const approach = Math.max(
+    0,
+    PARK_ZONE_WIDTH - Math.abs(creature.currentX - zoneCenter)
+  );
   return park * 2.5 + approach * 0.15;
 }
 
@@ -3465,7 +4029,7 @@ function flightTimeBoutScore(
   minClear = FLIGHT_MIN_CLEARANCE_FLOOR
 ): number {
   const excessPeak = flightExcessClearance(peak, minClear);
-  if (frames < 8 || excessPeak < 1) return 0;
+  if (frames < 8 || excessPeak < FLIGHT_EXCESS_PEAK_MIN) return 0;
   const meanClear = frames > 0 ? integral / frames : 0;
   const excessMean = flightExcessClearance(meanClear, minClear);
   // Bout duration is the streak; episode totals never enter.
@@ -3557,7 +4121,7 @@ function activeGlideBoutFitness(creature: Creature): number {
   const excessMean = flightExcessClearance(meanClear, minClear);
 
   // Below the body-scaled flight floor: no glide reward (standing / skim hops).
-  if (air < 12 || excessPeak < 1) return 0;
+  if (air < 12 || excessPeak < FLIGHT_EXCESS_PEAK_MIN) return 0;
 
   // Prefer mid-height cruise; do NOT reward ballistic peak height.
   const cruiseHeight =
@@ -3680,7 +4244,8 @@ export function calculateFitness(
   objects: WorldObject[] = [],
   customGoal?: CustomGoalConfig,
   obstacles: Obstacle[] = [],
-  paraStage?: import('./types').ParaPilotStage
+  paraStage?: import('./types').ParaPilotStage,
+  rewardRecipe?: BuiltInRewardRecipe
 ): number {
   switch (goal) {
     case EvolutionGoal.LOCOMOTION_RIGHT:
@@ -3696,7 +4261,7 @@ export function calculateFitness(
     case EvolutionGoal.CLEAR_BAR:
       return clearBarFitness(creature, obstacles);
     case EvolutionGoal.SPEED:
-      return speedFitness(creature);
+      return speedFitness(creature, rewardRecipe);
     case EvolutionGoal.JUMP_LAND_UPRIGHT:
       return jumpLandFitness(creature);
     case EvolutionGoal.LONG_JUMP:
@@ -3706,7 +4271,7 @@ export function calculateFitness(
     case EvolutionGoal.JUMP_LEFT:
       return jumpLeftFitness(creature);
     case EvolutionGoal.JUMP_SPEED:
-      return jumpSpeedFitness(creature);
+      return jumpSpeedFitness(creature, rewardRecipe);
     case EvolutionGoal.JUMP_ACROBATICS:
       return jumpAcrobaticsFitness(creature);
     case EvolutionGoal.HOP_RIGHT:
@@ -3793,6 +4358,8 @@ export function calculateFitness(
       return aerialCrossingFitness(creature);
     case EvolutionGoal.PARA_RAMP_GLIDE:
       return paraRampFitness(creature, paraStage ?? 'runUp');
+    case EvolutionGoal.CHUTE_DESCENT:
+      return chuteDescentFitness(creature);
     case EvolutionGoal.CUSTOM:
       return evaluateCustomGoal(creature, customGoal || { name: 'Custom', rules: [] }, objects, obstacles);
     default:
@@ -3811,8 +4378,8 @@ export function updateCreaturePhysics(
   objects: WorldObject[] = [],
   /** Optional scripted actuators (−1…1): flexible muscles first, then motor wheels. */
   actuatorOverride?: number[],
-  /** Test-only: zero the trailing object-relative pack before the brain reads it. */
-  opts?: { ablateObjectSensors?: boolean }
+  /** Test-only: zero / strip sensor packs before the brain reads them. */
+  opts?: { ablateObjectSensors?: boolean; ablateContactSensors?: boolean }
 ) {
   if (!creature.isAlive) return;
 
@@ -3847,38 +4414,41 @@ export function updateCreaturePhysics(
     creature.peakLandSpeed = Math.max(creature.peakLandSpeed ?? 0, horizSpeed);
   }
 
-  if (uprightScore(creature) > 40) {
+  if (uprightScore(creature) > UPRIGHT_SCORE_GOOD) {
     creature.uprightFrames = (creature.uprightFrames ?? 0) + 1;
   }
 
+  const ablateContact = !!opts?.ablateContactSensors;
   const inputs: number[] = [
     Math.sin(simTime * 0.1),
     Math.cos(simTime * 0.1),
   ];
 
   for (const node of creature.nodes) {
-    inputs.push((node.x - centerX) / 100);
-    inputs.push((node.y - centerY) / 100);
-    inputs.push(node.isGround ? 1.0 : 0.0);
+    inputs.push((node.x - centerX) / BODY_OBS_LENGTH_DIVISOR);
+    inputs.push((node.y - centerY) / BODY_OBS_LENGTH_DIVISOR);
+    inputs.push(nodeContactSensorValue(node, ablateContact));
   }
 
   // Winged bodies: body-rate / airflow / altitude pack (F06 / D078)
   if (hasWing(creature)) {
     const ang = creature.bodyAngle ?? 0;
     const om = creature.bodyOmega ?? 0;
-    inputs.push(Math.max(-2, Math.min(2, horizSpeed / 6)));
-    inputs.push(Math.max(-2, Math.min(2, vertSpeed / 3)));
+    inputs.push(Math.max(-2, Math.min(2, horizSpeed / BODY_OBS_SPEED_DIV_FAST)));
+    inputs.push(Math.max(-2, Math.min(2, vertSpeed / BODY_OBS_SPEED_DIV_VERT)));
     inputs.push(Math.sin(ang));
     inputs.push(Math.cos(ang));
     inputs.push(Math.max(-2, Math.min(2, om / 0.25)));
-    inputs.push(Math.max(0, Math.min(2, flightClearance(creature) / 100)));
+    inputs.push(
+      Math.max(0, Math.min(2, flightClearance(creature) / BODY_OBS_LENGTH_DIVISOR))
+    );
   }
 
   // Paraglider brains: speed, sail openness, vertical sink + ramp sensors
   if (hasParaglider(creature)) {
-    inputs.push(Math.min(2, horizSpeed / 40));
+    inputs.push(Math.min(2, horizSpeed / BODY_OBS_SPEED_DIV_MED));
     inputs.push(sailOpenness(creature));
-    inputs.push(Math.max(-1.5, Math.min(1.5, vertSpeed / 4)));
+    inputs.push(Math.max(-1.5, Math.min(1.5, vertSpeed / BODY_OBS_SPEED_DIV_MED)));
     const ramp = findTakeoffRamp(obstacles);
     const rampStart = ramp?.x ?? creature.currentX + 800;
     inputs.push(Math.max(-1, Math.min(2, (rampStart - centerX) / 400)));
@@ -3894,6 +4464,9 @@ export function updateCreaturePhysics(
       inputs[i] = 0;
     }
   }
+
+  // C2 / D147: contact-class summary (node floor/structure/object + link pack)
+  inputs.push(...contactSensorValues(creature, ablateContact));
 
   const flyingNow = isFullyAirborne(creature);
   let lockSailReefed = false;
@@ -3940,10 +4513,12 @@ export function updateCreaturePhysics(
     }
     const desired =
       muscle.minLength + normalizedOutput * (muscle.maxLength - muscle.minLength);
-    // Soft springs jump to command; telescopes / pistons rate-limit extension.
-    muscle.targetLength = isVariableHardLink(muscle)
-      ? rateLimitHardLengthTarget(muscle, desired)
-      : Math.max(muscle.minLength, Math.min(muscle.maxLength, desired));
+    // Soft (optional cap) and pistons rate-limit command; unlimited soft snaps.
+    muscle.targetLength = rateLimitLengthTarget(
+      muscle,
+      desired,
+      creature.blueprint
+    );
   }
 
   // Hard companion on the same node pair slaves to the soft muscle's target.
@@ -3955,7 +4530,11 @@ export function updateCreaturePhysics(
       muscle.minLength,
       Math.min(muscle.maxLength, soft.targetLength)
     );
-    muscle.targetLength = rateLimitHardLengthTarget(muscle, desired);
+    muscle.targetLength = rateLimitLengthTarget(
+      muscle,
+      desired,
+      creature.blueprint
+    );
   }
 
   // Stash motor drive commands; applied after ground contact is resolved
@@ -3982,7 +4561,10 @@ export function updateCreaturePhysics(
     node.oldX = tempX;
     node.oldY = tempY;
     node.isGround = false;
+    node.contactClass = CONTACT_NONE;
   }
+  creature.linkContactStructure = false;
+  creature.linkContactObject = false;
 
   applyWind(creature.nodes, config, simTime);
 
@@ -4027,54 +4609,45 @@ export function updateCreaturePhysics(
       ) {
         continue;
       }
-      const nodeA = creature.nodes[muscle.nodeA];
-      const nodeB = creature.nodes[muscle.nodeB];
-      if (!nodeA || !nodeB) continue;
-
-      const dx = nodeB.x - nodeA.x;
-      const dy = nodeB.y - nodeA.y;
-      const currentLength = Math.sqrt(dx * dx + dy * dy) || 0.001;
-      const target = muscle.targetLength;
-      const diff = target - currentLength;
+      if (!creature.nodes[muscle.nodeA] || !creature.nodes[muscle.nodeB]) continue;
       const strength = isHardLengthConstraint(muscle) ? 1.0 : muscle.strength;
       // Hard links take a full correction step so telescopes stay rigid under load.
       const stepScale = isHardLengthConstraint(muscle) ? 1.0 : 0.5;
-      const percent = (diff / currentLength) * strength * stepScale;
-      const offsetX = dx * percent;
-      const offsetY = dy * percent;
-
-      const totalMass = nodeA.mass + nodeB.mass;
-      const factorA = nodeB.mass / totalMass;
-      const factorB = nodeA.mass / totalMass;
-
-      applyLengthCorrectionDelta(
-        nodeA,
-        nodeB,
-        offsetX * factorA,
-        offsetY * factorA,
-        offsetX * factorB,
-        offsetY * factorB,
+      projectMuscleLengthConstraint(
         muscle,
-        diff
+        creature.muscles,
+        creature.nodes,
+        strength,
+        stepScale,
+        hingeStopsActive
       );
     }
     if (solidBodies && solidBodies.length > 0) {
       projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: true });
     }
-    if (hingeStopsActive) {
+  }
+  // After soft/hard length settle: converge hinge stops against bones only.
+  // Interleaving soft actuators with the stop every pass pumps Verlet energy.
+  if (hingeStopsActive) {
+    for (let step = 0; step < 10; step++) {
       projectHingeStops(creature.nodes, creature.muscles);
+      projectHardLengthConstraints(creature, true);
+      if (solidBodies && solidBodies.length > 0) {
+        projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: true });
+      }
     }
   }
 
   // Extra hard-only projections so telescopes / bones converge under mass imbalance.
   for (let step = 0; step < 6; step++) {
-    projectHardLengthConstraints(creature);
+    projectHardLengthConstraints(creature, hingeStopsActive);
     if (solidBodies && solidBodies.length > 0) {
       projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: true });
     }
-    if (hingeStopsActive) {
-      projectHingeStops(creature.nodes, creature.muscles);
-    }
+  }
+  if (hingeStopsActive) {
+    projectHingeStops(creature.nodes, creature.muscles);
+    projectHardLengthConstraints(creature, true);
   }
 
   // Wings: plate pressure from this frame's tip motion (flap) and airspeed — no float
@@ -4096,14 +4669,16 @@ export function updateCreaturePhysics(
         friction = Math.min(1, Math.max(0, (baseFriction + (node.friction ?? 0.5)) * 0.5));
       }
 
-      // Ice patches: slippery when overlapping ice rectangles on the ground strip
+      // Ice patches: slippery when overlapping ice rectangles on the ground strip.
+      // Use the authored patch band (obs.y…obs.y+height) so the slippery zone
+      // matches the drawn geometry instead of a hard-coded GROUND_Y strip.
       if (config.arena.iceEnabled || config.goal === EvolutionGoal.MOTOR_ICE) {
         for (const obs of obstacles) {
           if (obs.type !== 'ice') continue;
           if (
             node.x >= obs.x &&
             node.x <= obs.x + obs.width &&
-            node.y >= GROUND_Y - node.radius - 4
+            node.y + node.radius >= obs.y - 1
           ) {
             friction = node.isWheel ? 0.01 : 0.08;
           }
@@ -4112,6 +4687,7 @@ export function updateCreaturePhysics(
 
       if (pass === 0) {
         node.isGround = false;
+        node.contactClass = CONTACT_NONE;
       }
 
       const pitUnder =
@@ -4133,7 +4709,7 @@ export function updateCreaturePhysics(
           const surfaceY = GROUND_Y;
           if (!overPit && node.y >= surfaceY - node.radius) {
             node.y = surfaceY - node.radius;
-            node.isGround = true;
+            plantContact(node, CONTACT_FLOOR);
             if (withFriction) applySurfaceFriction(node, friction);
           } else if (node.y + node.radius >= pitFailureY) {
             creature.fellInPit = true;
@@ -4147,7 +4723,7 @@ export function updateCreaturePhysics(
           collideNodeStair(node, obs, friction, withFriction);
         } else if (obs.type === 'loop') {
           collideNodeLoop(node, obs, friction, withFriction);
-        } else if (obs.type === 'box') {
+        } else if (obs.type === 'box' || obs.type === 'tower') {
           collideNodeAABB(
             node,
             obs.x,
@@ -4264,7 +4840,7 @@ export function updateCreaturePhysics(
   }
 
   // Final hard-length settle after contact (telescopes / bones under load).
-  projectHardLengthConstraints(creature);
+  projectHardLengthConstraints(creature, hingeStopsActive);
   if (solidBodies && solidBodies.length > 0) {
     const solidsThatHitGround = new Set<string>();
     for (const body of solidBodies) {
@@ -4277,7 +4853,13 @@ export function updateCreaturePhysics(
       }
     }
     projectSolidBodies(creature.nodes, solidBodies, { preserveVelocity: false });
-    resolveSolidFlatGround(creature, solidsThatHitGround, flatFloorSupport, terrainActive);
+    resolveSolidFlatGround(
+      creature,
+      solidsThatHitGround,
+      flatFloorSupport,
+      terrainActive,
+      baseFriction
+    );
   }
   if (hingeStopsActive) {
     projectHingeStops(creature.nodes, creature.muscles);
@@ -4502,12 +5084,41 @@ export function updateCreaturePhysics(
 
   // Gap clear: the full physical hull passed the far lip without a pit fall.
   // Landing goals separately require supported contact after this event.
+  // Span fraction: how far the leading edge got across the pit (failed jumps count).
+  // Pre-jump: all wheels airborne in the 40px window immediately left of the lip.
   const pit = obstacles.find(o => o.type === 'pit');
-  if (pit && !creature.gapCleared && !creature.fellInPit) {
+  if (pit) {
     const farLip = pit.x + pit.width;
-    const fullHullBeyond = creature.nodes.every(node => node.x - node.radius > farLip);
-    if (fullHullBeyond) {
-      creature.gapCleared = true;
+    let leadX = -Infinity;
+    for (const node of creature.nodes) {
+      leadX = Math.max(leadX, node.x + node.radius);
+    }
+    if (Number.isFinite(leadX) && pit.width > 1) {
+      const span = Math.max(0, Math.min(1, (leadX - pit.x) / pit.width));
+      creature.gapSpanFraction = Math.max(creature.gapSpanFraction ?? 0, span);
+    }
+    if (!creature.gapCleared && !creature.fellInPit) {
+      const fullHullBeyond = creature.nodes.every(node => node.x - node.radius > farLip);
+      if (fullHullBeyond) {
+        creature.gapCleared = true;
+        creature.gapSpanFraction = 1;
+      }
+    }
+    if (
+      config.goal === EvolutionGoal.MOTOR_GAP &&
+      !creature.gapPreJump &&
+      !creature.fellInPit &&
+      eventCenterX >= pit.x - GAP_PRE_JUMP_ZONE_PX &&
+      eventCenterX < pit.x
+    ) {
+      const wheels = creature.nodes.filter(n => n.isWheel || n.isMotorWheel);
+      const allWheelsAir =
+        wheels.length > 0
+          ? wheels.every(w => !w.isGround)
+          : !hasSupportedContact;
+      if (allWheelsAir) {
+        creature.gapPreJump = true;
+      }
     }
   }
   if (
@@ -4751,12 +5362,14 @@ export function updateCreaturePhysics(
       }
     }
 
-    // Flight Land: climb to a ceiling, punish further height gain, then reward descent.
-    if (config.goal === EvolutionGoal.FLIGHT_LAND) {
-      const landCeiling = creatureFlightLandCeiling(creature);
+    // Flight Land / Chute Descent: reward controlled descent after leaving the tower.
+    if (config.goal === EvolutionGoal.FLIGHT_LAND || config.goal === EvolutionGoal.CHUTE_DESCENT) {
+      const landCeiling = config.goal === EvolutionGoal.CHUTE_DESCENT
+        ? (creature.airbornePeakHeight ?? airborneHeight)
+        : creatureFlightLandCeiling(creature);
       const clear = Math.max(airborneHeight, flightClearance(creature));
       if (!creature.landReachedCeiling) {
-        if (climbing && clear <= landCeiling * 1.05) {
+        if (config.goal === EvolutionGoal.FLIGHT_LAND && climbing && clear <= landCeiling * 1.05) {
           const toward = Math.min(clear, landCeiling) / landCeiling;
           creature.landClimbScore =
             (creature.landClimbScore ?? 0) + toward * 0.35 + Math.min(1.2, -vertSpeed) * 0.25;
@@ -4765,7 +5378,7 @@ export function updateCreaturePhysics(
           creature.landReachedCeiling = true;
         }
       } else {
-        if (climbing && clear > landCeiling) {
+        if (config.goal === EvolutionGoal.FLIGHT_LAND && climbing && clear > landCeiling) {
           creature.landOvershootPenalty =
             (creature.landOvershootPenalty ?? 0) +
             ((clear - landCeiling) / landCeiling) * 0.55 +
@@ -4774,14 +5387,22 @@ export function updateCreaturePhysics(
         if (descending) {
           creature.landBeganDescent = true;
           const flare = 1 - Math.min(1, clear / Math.max(landCeiling, 1));
+          const sink = Math.min(2.5, vertSpeed);
+          const controlled = config.goal === EvolutionGoal.CHUTE_DESCENT
+            ? (sink >= 0.35 && sink <= 2.8 ? 1.15 : sink > 2.8 ? 0.35 : 0.75)
+            : 1;
           creature.landDescentScore =
             (creature.landDescentScore ?? 0) +
-            Math.min(2.5, vertSpeed) * 0.55 +
+            sink * 0.55 * controlled +
             flare * 0.4;
         }
         if (creature.landBeganDescent && climbing) {
           creature.landOvershootPenalty =
             (creature.landOvershootPenalty ?? 0) + Math.min(2, -vertSpeed) * 0.9;
+        }
+        if (config.goal === EvolutionGoal.CHUTE_DESCENT && vertSpeed > 4.5) {
+          creature.landOvershootPenalty =
+            (creature.landOvershootPenalty ?? 0) + (vertSpeed - 4.5) * 0.45;
         }
       }
     }
@@ -4803,7 +5424,9 @@ export function updateCreaturePhysics(
         if (returnQuality > 0) {
           const upright = uprightScore(creature);
           const uprightMul =
-            upright > 40 ? 0.55 + Math.min(1.15, upright / 100) : 0.25;
+            upright > UPRIGHT_SCORE_GOOD
+              ? 0.55 + Math.min(1.15, upright / 10)
+              : 0.25;
           const soft = Math.max(0.3, 1 - impactSpeed / 9);
           const attempt = peakAir * returnQuality * uprightMul * soft * 2.2;
           creature.uprightLandingScore = Math.max(
@@ -4817,7 +5440,11 @@ export function updateCreaturePhysics(
       creature.jumpTakeoffX = undefined;
     } else if (config.goal === EvolutionGoal.MOTOR_LAUNCH_LAND && wasAirborne) {
       // Best launch → pad landing only (max, not sum). Ramp hops never score.
-      if (creature.gapCleared && peakAir >= 32) {
+      const launchMinAir = Math.max(
+        MOTOR_LAUNCH_MIN_AIR_PX,
+        creatureJumpLandMinHeight(creature)
+      );
+      if (creature.gapCleared && peakAir >= launchMinAir) {
         const motorCount = creature.nodes.filter(n => n.isMotorWheel).length;
         const onPad = motorWheelsOnBoxPad(creature, obstacles);
         if (onPad > 0 && motorCount > 0) {
@@ -4832,32 +5459,46 @@ export function updateCreaturePhysics(
       }
     }
 
-    // Flight Land stick: ceiling + descent + soft upright after a real streak
+    // Flight Land / Chute Descent stick: descent + soft upright landing
     const streak = creature.flightStreak ?? 0;
     if (
-      config.goal === EvolutionGoal.FLIGHT_LAND &&
+      (config.goal === EvolutionGoal.FLIGHT_LAND || config.goal === EvolutionGoal.CHUTE_DESCENT) &&
       wasAirborne &&
-      streak >= 28 &&
+      streak >= (config.goal === EvolutionGoal.CHUTE_DESCENT ? 18 : 28) &&
       creature.landReachedCeiling &&
       creature.landBeganDescent
     ) {
       const upright = uprightScore(creature);
       const soft = Math.max(0, 1 - impactSpeed / 7.5);
-      if (upright > 50 && soft > 0.15) {
+      // UPRIGHT_SCORE_GOOD (=4) is the world-scale posture gate; legacy used 50.
+      if (upright > UPRIGHT_SCORE_GOOD && soft > 0.15) {
         creature.flightLandScore =
-          streak * soft * (0.5 + Math.min(1.1, upright / 110));
-        creature.flightLandBestBoutScore = Math.max(
-          creature.flightLandBestBoutScore ?? 0,
-          activeFlightLandBoutFitness(creature)
-        );
+          streak *
+          soft *
+          (0.5 + Math.min(1.1, upright / (UPRIGHT_SCORE_GOOD * 2.75)));
+        if (config.goal === EvolutionGoal.FLIGHT_LAND) {
+          creature.flightLandBestBoutScore = Math.max(
+            creature.flightLandBestBoutScore ?? 0,
+            activeFlightLandBoutFitness(creature)
+          );
+        } else {
+          creature.chuteDescentBestScore = Math.max(
+            creature.chuteDescentBestScore ?? 0,
+            chuteDescentFitness(creature)
+          );
+        }
       }
     }
     creature.airbornePeakHeight = 0;
-    creature.landReachedCeiling = false;
-    creature.landBeganDescent = false;
-    if (config.goal === EvolutionGoal.FLIGHT_LAND && wasAirborne) {
+    if (config.goal !== EvolutionGoal.CHUTE_DESCENT) {
+      creature.landReachedCeiling = false;
+      creature.landBeganDescent = false;
+    }
+    if ((config.goal === EvolutionGoal.FLIGHT_LAND || config.goal === EvolutionGoal.CHUTE_DESCENT) && wasAirborne) {
       creature.flightLandScore = 0;
-      creature.landClimbScore = 0;
+      if (config.goal === EvolutionGoal.FLIGHT_LAND) {
+        creature.landClimbScore = 0;
+      }
       creature.landDescentScore = 0;
       creature.landOvershootPenalty = 0;
     }
@@ -4952,7 +5593,7 @@ export function updateCreaturePhysics(
     }
     creature.groundedStreak = 0;
   } else if ((creature.jumpHangBoutFrames ?? 0) > 0) {
-    finalizeIsolatedOrHopBout(creature);
+    finalizeIsolatedOrHopBout(creature, config.rewardRecipe);
     if (
       isIsolatedJumpGoal(config.goal) ||
       config.goal === EvolutionGoal.HOP_RIGHT ||
@@ -5294,7 +5935,8 @@ export function updateCreaturePhysics(
     objects,
     config.customGoal,
     obstacles,
-    config.paraPilotStage
+    config.paraPilotStage,
+    config.rewardRecipe
   );
 }
 

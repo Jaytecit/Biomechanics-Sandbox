@@ -152,8 +152,8 @@ function testDragOnly() {
     const xAfter = (a.x + b.x) / 2;
     return xAfter - xBefore; // negative if opposing +vx travel
   }
-  const small = plate(20, 4);
-  const large = plate(120, 4);
+  const small = plate(0.2, 4);
+  const large = plate(1.2, 4);
   assert(small <= 0.001, `Small-area drag accelerated travel (dx=${small})`);
   assert(large < small - 0.001, `Larger area did not drag more (small=${small} large=${large})`);
   console.log(`PASS Test2 drag-only smallDx=${small.toFixed(4)} largeDx=${large.toFixed(4)}`);
@@ -181,7 +181,7 @@ function testFixedPlateDrop() {
           strength: 0.9,
           phaseOffset: 0,
           aeroType: 'wing' as const,
-          aeroArea: 90,
+          aeroArea: 1,
           _prevTarget: 60, // hold — production wings would be drag-only; diagnostic plate still acts
         },
       ],
@@ -224,7 +224,7 @@ function testAoASweep() {
           strength: 0.55,
           phaseOffset: 0,
           aeroType: 'paraglider' as const,
-          aeroArea: 140,
+          aeroArea: 1.4,
         },
       ],
     } as unknown as Creature;
@@ -324,7 +324,7 @@ function testSymmetry() {
       targetLength: 40,
       _prevTarget: 70,
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
     {
       id: 1,
@@ -338,7 +338,7 @@ function testSymmetry() {
       targetLength: 40,
       _prevTarget: 70,
       aeroType: 'wing' as const,
-      aeroArea: 75,
+      aeroArea: 1,
     },
   ];
   const creature = { nodes: [body, tipL, tipR], muscles } as unknown as Creature;
@@ -388,7 +388,7 @@ function testPreConstraintAeroVelocity() {
           strength: 0.9,
           phaseOffset: 0,
           aeroType: 'wing' as const,
-          aeroArea: 120,
+          aeroArea: 1.2,
           _prevTarget: 70, // flap gate open
         },
       ],
@@ -441,7 +441,7 @@ function makeFlappingPlate(): Creature {
         strength: 0.9,
         phaseOffset: 0,
         aeroType: 'wing' as const,
-        aeroArea: 75,
+        aeroArea: 1,
         _prevTarget: 60,
       },
     ],

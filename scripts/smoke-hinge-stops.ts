@@ -32,7 +32,7 @@ import {
   genomeIOForBlueprint,
 } from '../src/types';
 
-assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.21.0');
+assert.equal(SOFT_BODY_PHYSICS_VERSION, '4.26.0');
 assert.ok(Math.abs(HINGE_STOP_MAX_ANGLE - Math.PI / 2) < 1e-9);
 
 function angleAt(
@@ -71,6 +71,8 @@ function angleAt(
   const vyB = endB.y - endB.oldY;
   const energyBefore = 0.5 * (vxA * vxA + vyA * vyA + vxB * vxB + vyB * vyB);
   assert.equal(enforcePairMaxAngle(hinge, endA, endB), true);
+  // Gradual per-call correction — converge like the physics relaxation loop.
+  for (let i = 0; i < 24; i += 1) enforcePairMaxAngle(hinge, endA, endB);
   const after = angleAt(hinge, endA, endB);
   assert.ok(
     after <= Math.PI / 2 + 1e-4,
@@ -85,6 +87,54 @@ function angleAt(
   assert.ok(
     energyAfter <= energyBefore + 1e-6,
     `hinge projection must not inject kinetic energy (${energyBefore} -> ${energyAfter})`
+  );
+}
+
+{
+  // Opening into the stop must be inelastic (no Verlet bounce / energy pump).
+  const hinge: PhysicsNode = {
+    id: 0, x: 0, y: 0, oldX: 0, oldY: 0, vx: 0, vy: 0,
+    mass: 1, radius: 8, friction: 0.5, isGround: false, isHingeStop: true,
+  };
+  const endA: PhysicsNode = {
+    id: 1, x: 40, y: 0, oldX: 40, oldY: 3, vx: 0, vy: 0,
+    mass: 1, radius: 8, friction: 0.5, isGround: false,
+  };
+  const endB: PhysicsNode = {
+    id: 2, x: -20, y: 34.64, oldX: -24, oldY: 32, vx: 0, vy: 0,
+    mass: 1, radius: 8, friction: 0.5, isGround: false,
+  };
+  assert.ok(angleAt(hinge, endA, endB) > Math.PI / 2);
+  const keBefore =
+    0.5 *
+    ((endA.x - endA.oldX) ** 2 +
+      (endA.y - endA.oldY) ** 2 +
+      (endB.x - endB.oldX) ** 2 +
+      (endB.y - endB.oldY) ** 2);
+  enforcePairMaxAngle(hinge, endA, endB);
+  // Integrate a few steps with repeated projection — KE must not runaway.
+  let peakKe = 0;
+  for (let i = 0; i < 30; i += 1) {
+    for (const n of [endA, endB]) {
+      const vx = n.x - n.oldX;
+      const vy = n.y - n.oldY;
+      n.oldX = n.x;
+      n.oldY = n.y;
+      n.x += vx;
+      n.y += vy;
+    }
+    enforcePairMaxAngle(hinge, endA, endB);
+    const ke =
+      0.5 *
+      ((endA.x - endA.oldX) ** 2 +
+        (endA.y - endA.oldY) ** 2 +
+        (endB.x - endB.oldX) ** 2 +
+        (endB.y - endB.oldY) ** 2);
+    peakKe = Math.max(peakKe, ke);
+  }
+  assert.ok(
+    peakKe <= keBefore * 1.5 + 1,
+    `inelastic hinge stop must not pump KE (start ${keBefore} peak ${peakKe})`
   );
 }
 
@@ -196,6 +246,98 @@ function angleAt(
   assert.ok(
     creature.nodes.every(n => n.y > 200),
     'hinged L must remain near the ground (no air launch)'
+  );
+}
+
+// --- Soft muscle fighting the stop must not explode KE ---
+{
+  const blueprint: CreatureBlueprint = {
+    name: 'Knee Drive',
+    nodes: [
+      { id: 0, mass: 3, radius: 10, friction: 0.6 },
+      { id: 1, mass: 1.5, radius: 8, friction: 0.5, isHingeStop: true },
+      { id: 2, mass: 1.2, radius: 9, friction: 0.8, isFoot: true },
+    ],
+    muscles: [
+      {
+        id: 0, nodeA: 0, nodeB: 1, originalLength: 35, minLength: 35, maxLength: 35,
+        strength: 1, phaseOffset: 0, linkKind: 'bone',
+      },
+      {
+        id: 1, nodeA: 1, nodeB: 2, originalLength: 35, minLength: 35, maxLength: 35,
+        strength: 1, phaseOffset: 0, linkKind: 'bone',
+      },
+      {
+        id: 2, nodeA: 0, nodeB: 2, originalLength: 60, minLength: 55, maxLength: 70,
+        strength: 1, phaseOffset: 0, linkKind: 'muscle',
+      },
+    ],
+    relativePositions: [
+      { x: 0, y: -70 },
+      { x: 10, y: -40 },
+      { x: 5, y: -10 },
+    ],
+  };
+  const io = genomeIOForBlueprint(blueprint);
+  const config: SimulationConfig = {
+    populationSize: 1,
+    generationDuration: 20,
+    simulationSpeed: 1,
+    mutationRate: 0.1,
+    addNodeRate: 0,
+    addConnectionRate: 0,
+    goal: EvolutionGoal.LOCOMOTION_RIGHT,
+    gravity: 0.4,
+    groundFriction: 0.8,
+    arena: { ...DEFAULT_ARENA_MODIFIERS },
+    customGoal: DEFAULT_CUSTOM_GOAL,
+  };
+  const creature = spawnCreature(
+    {
+      id: 'knee-drive',
+      generation: 0,
+      blueprint,
+      genome: createBaseGenome(io.inputs, io.outputs),
+    },
+    200,
+    380,
+    EvolutionGoal.LOCOMOTION_RIGHT,
+    1
+  );
+  const outputs = new Array(io.outputs).fill(1);
+  let peakKe = 0;
+  let peakSpeed = 0;
+  for (let f = 0; f < 400; f += 1) {
+    for (const m of creature.muscles) {
+      if (m.linkKind === 'muscle') m.targetLength = m.maxLength;
+    }
+    updateCreaturePhysics(creature, [], f, config, [], outputs);
+    let ke = 0;
+    for (const n of creature.nodes) {
+      const vx = n.x - n.oldX;
+      const vy = n.y - n.oldY;
+      ke += 0.5 * n.mass * (vx * vx + vy * vy);
+      peakSpeed = Math.max(peakSpeed, Math.hypot(vx, vy));
+    }
+    peakKe = Math.max(peakKe, ke);
+  }
+  assert.ok(
+    peakKe < 100,
+    `soft muscle vs hinge stop must not explode KE (peak ${peakKe.toFixed(1)})`
+  );
+  assert.ok(
+    peakSpeed < 9,
+    `soft muscle vs hinge stop must not invent launch speed (peak ${peakSpeed.toFixed(2)})`
+  );
+  assert.ok(
+    creature.nodes.every(n => n.y > 350),
+    'hinge stop must not launch the creature into the air'
+  );
+  const [hip, knee, foot] = creature.nodes;
+  const finalAng = angleAt(knee, hip, foot);
+  assert.ok(
+    finalAng <= Math.PI / 2 + 0.15,
+    `driven knee must stay near ≤90°, got ${(finalAng * 180) / Math.PI}°`
   );
 }
 
