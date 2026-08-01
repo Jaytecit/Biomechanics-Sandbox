@@ -171,6 +171,7 @@ const DEFAULT_CONFIG: SimulationConfig = {
   goal: EvolutionGoal.LOCOMOTION_RIGHT,
   gravity: 0.4,
   groundFriction: 0.8,
+  oscillationIgnore: 0,
   arena: { ...DEFAULT_ARENA_MODIFIERS },
   customGoal: { ...DEFAULT_CUSTOM_GOAL, rules: DEFAULT_CUSTOM_GOAL.rules.map(r => ({ ...r })) },
   paraPilotStage: 'runUp',

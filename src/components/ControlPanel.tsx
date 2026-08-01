@@ -5,6 +5,10 @@
 
 import React, { useMemo, useState } from 'react';
 import { EvolutionGoal, SimulationConfig, CreatureBlueprint } from '../types';
+import {
+  clampOscillationIgnore,
+  oscillationIgnoreDwellTicks,
+} from '../physicsConstants';
 import { CREATURE_TEMPLATES } from '../templates';
 import { isBuiltinTemplate } from '../savedCreatures';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -354,6 +358,40 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   />
                 </div>
               ))}
+              {(() => {
+                const ignore = clampOscillationIgnore(config.oscillationIgnore);
+                const dwell = oscillationIgnoreDwellTicks(ignore);
+                return (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-semibold text-slate-700">
+                      <span>Ignore Oscillations</span>
+                      <span className="text-indigo-600">
+                        {ignore <= 0
+                          ? 'Off'
+                          : `${(ignore * 100).toFixed(0)}% · ${dwell} tick min`}
+                      </span>
+                    </div>
+                    <input
+                      aria-label="Ignore Oscillations"
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={ignore}
+                      onChange={e =>
+                        onUpdateConfig({
+                          oscillationIgnore: clampOscillationIgnore(parseFloat(e.target.value)),
+                        })
+                      }
+                      className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-medium">
+                      Rejects brain muscle reversals faster than the dwell. Buzz cannot move the
+                      body or earn travel rewards. Off = legacy. Raise to find the sweet spot.
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
             )}
           </CollapsibleSection>
@@ -373,6 +411,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               </p>
               <p>
                 <strong>Actuators:</strong> Flexible muscles stretch/contract; motor wheels get a drive command only while grounded.
+              </p>
+              <p>
+                <strong>Ignore Oscillations:</strong> When raised, muscle commands must keep the same
+                stroke direction for a minimum dwell before reversing — high-frequency buzz is held
+                still so it cannot scoot the body or score travel.
               </p>
               <p>
                 <strong>Physics:</strong> Verlet point-spring constraints with gravity, friction, and obstacles.

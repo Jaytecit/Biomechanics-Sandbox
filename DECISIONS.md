@@ -1,5 +1,32 @@
 # DECISIONS.md — Soft-body Sandbox
 
+## D161 — Session oscillation ignore (reverse-dwell) (2026-08-01)
+
+**Decision:** Soft-body physics stays `4.26.0`. Session config gains
+`oscillationIgnore` (0…1, default **0** = off). When raised, brain-driven
+length commands must keep the same stroke direction for
+`oscillationIgnoreDwellTicks(ignore)` ticks before a reverse is accepted;
+rejected reversals hold `targetLength` so the body does not move.
+
+**Why:** Authors need a live sweet-spot slider to starve high-frequency muscle
+buzz without baking a rate cap into every blueprint. Holding the command means
+vibration cannot scoot the mesh and cannot mint travel / plant rewards. Default
+off preserves legacy + Shuffle vibration goals.
+
+**Rules:**
+- `clampOscillationIgnore` / `oscillationIgnoreDwellTicks` in `physicsConstants`
+  (`OSCILLATION_IGNORE_MAX_DWELL_TICKS = 24` at strength 1).
+- Applied in `updateCreaturePhysics` before `rateLimitLengthTarget` on
+  brain-driven muscles only; hard slaves follow the filtered soft target.
+- Holds (sub-`LENGTH_ACTUATION_EPS_PX` Δ) count toward dwell; physics version
+  unchanged because `0` is identity (same pattern as gravity / friction).
+- ControlPanel **Ignore Oscillations** slider under Evolution & Physics Tuning.
+
+**Evidence:** `scripts/smoke-oscillation-ignore.ts`.
+
+**Reversible:** Drop `oscillationIgnore` + `applyOscillationIgnore`; leave
+slider wiring out of ControlPanel / `DEFAULT_CONFIG`.
+
 ## D153 — Physics/geometry repair sweep (2026-07-31)
 
 **Decision:** Soft-body physics advances `4.25.0` → `4.26.0`. A cross-area

@@ -62,6 +62,7 @@ import {
   GROUND_Y,
   WORLD_GRAVITY,
   LENGTH_ACTUATION_EPS_PX,
+  oscillationIgnoreDwellTicks,
   RELAXATION_ITERATIONS,
   GAIT_HISTORY_LENGTH,
   telescopeCommandDeltaBudget,
@@ -285,6 +286,45 @@ function rateLimitLengthTarget(
     maxDelta = telescopeCommandDeltaBudget(muscle.minLength, muscle.maxLength);
   }
   return Math.max(prev - maxDelta, Math.min(prev + maxDelta, clamped));
+}
+
+/**
+ * D161 — reject brain length-command reversals faster than the session dwell.
+ * Holds `targetLength` so high-frequency flip-flops cannot move the body (and
+ * therefore cannot mint travel / plant rewards). `minDwellTicks <= 0` is a no-op.
+ */
+function applyOscillationIgnore(
+  muscle: PhysicsMuscle,
+  desired: number,
+  minDwellTicks: number
+): number {
+  if (minDwellTicks <= 0) return desired;
+  const prev = muscle.targetLength;
+  const delta = desired - prev;
+  const band = LENGTH_ACTUATION_EPS_PX;
+  const dir: -1 | 0 | 1 = delta > band ? 1 : delta < -band ? -1 : 0;
+  const strokeDir = muscle._commandStrokeDir ?? 0;
+  const strokeTicks = muscle._commandStrokeTicks ?? 0;
+
+  if (dir !== 0 && strokeDir !== 0 && dir !== strokeDir && strokeTicks < minDwellTicks) {
+    // Reverse requested too soon — ignore; keep counting the prior stroke.
+    muscle._commandStrokeTicks = strokeTicks + 1;
+    return prev;
+  }
+
+  if (dir !== 0) {
+    if (dir !== strokeDir) {
+      muscle._commandStrokeDir = dir;
+      muscle._commandStrokeTicks = 1;
+    } else {
+      muscle._commandStrokeTicks = strokeTicks + 1;
+      muscle._commandStrokeDir = dir;
+    }
+  } else if (strokeDir !== 0) {
+    // Hold still counts toward dwell (committed stroke phase).
+    muscle._commandStrokeTicks = strokeTicks + 1;
+  }
+  return desired;
 }
 
 /**
@@ -4491,6 +4531,8 @@ export function updateCreaturePhysics(
   }
 
   // Map brain outputs onto flexible muscles / lone telescopes, then motor wheels
+  // D161: session reverse-dwell (0 = off) — reject HF command flip-flops.
+  const ignoreDwell = oscillationIgnoreDwellTicks(config.oscillationIgnore);
   let actuatorIdx = 0;
   for (let mIdx = 0; mIdx < creature.muscles.length; mIdx++) {
     const muscle = creature.muscles[mIdx];
@@ -4513,10 +4555,11 @@ export function updateCreaturePhysics(
     }
     const desired =
       muscle.minLength + normalizedOutput * (muscle.maxLength - muscle.minLength);
+    const filtered = applyOscillationIgnore(muscle, desired, ignoreDwell);
     // Soft (optional cap) and pistons rate-limit command; unlimited soft snaps.
     muscle.targetLength = rateLimitLengthTarget(
       muscle,
-      desired,
+      filtered,
       creature.blueprint
     );
   }
@@ -4530,6 +4573,7 @@ export function updateCreaturePhysics(
       muscle.minLength,
       Math.min(muscle.maxLength, soft.targetLength)
     );
+    // Slaves follow the already-filtered soft target — no second reverse-dwell.
     muscle.targetLength = rateLimitLengthTarget(
       muscle,
       desired,

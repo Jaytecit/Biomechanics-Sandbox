@@ -165,6 +165,13 @@ export interface PhysicsMuscle {
   _constraintTargetSeen?: number;
   /** Runtime: true this physics tick when targetLength changed (D142). */
   _actuatingThisTick?: boolean;
+  /**
+   * Runtime (D161): last accepted command stroke direction (−1 retract, +1
+   * extend, 0 idle). Used by session `oscillationIgnore` reverse-dwell.
+   */
+  _commandStrokeDir?: -1 | 0 | 1;
+  /** Runtime (D161): ticks spent in `_commandStrokeDir` (holds count). */
+  _commandStrokeTicks?: number;
 }
 
 export interface Obstacle {
@@ -1170,6 +1177,13 @@ export interface SimulationConfig {
   goal: EvolutionGoal;
   gravity: number;
   groundFriction: number;
+  /**
+   * D161 — ignore high-frequency actuator flip-flops (0…1).
+   * `0` (default) = off (legacy). Higher values require longer same-direction
+   * command strokes before a reverse is applied, so buzz cannot move the body
+   * or mint travel rewards. See `oscillationIgnoreDwellTicks`.
+   */
+  oscillationIgnore?: number;
   arena: ArenaModifiers;
   customGoal: CustomGoalConfig;
   /**

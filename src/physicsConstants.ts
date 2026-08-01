@@ -29,8 +29,33 @@ export const GROUND_Y = 480;
  * always use position-only correction), seeds spawn targetLength inside the
  * stroke bounds, normalizes inverted min/max stroke bounds, and aligns the
  * ice-friction band with authored patch geometry.
+ * D161 adds session `oscillationIgnore` (default 0 = off): reverse-dwell filter
+ * on brain→length commands so high-frequency flip-flops do not move the body.
  */
 export const SOFT_BODY_PHYSICS_VERSION = '4.26.0';
+
+/**
+ * D161 — at `oscillationIgnore = 1`, brain-driven length commands must keep the
+ * same stroke direction for this many ticks before a reverse is accepted.
+ * `0` disables the filter (identity). Tunable via ControlPanel slider.
+ */
+export const OSCILLATION_IGNORE_MAX_DWELL_TICKS = 24;
+
+/** Clamp session oscillation-ignore strength to [0, 1]; non-finite → 0. */
+export function clampOscillationIgnore(value: number | undefined | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return value >= 1 ? 1 : value;
+}
+
+/**
+ * Minimum same-direction stroke ticks before a reverse command is accepted.
+ * `0` when ignore is off.
+ */
+export function oscillationIgnoreDwellTicks(ignore: number | undefined | null): number {
+  const t = clampOscillationIgnore(ignore);
+  if (t <= 0) return 0;
+  return Math.max(1, Math.round(t * OSCILLATION_IGNORE_MAX_DWELL_TICKS));
+}
 
 /**
  * Length-error below this (px) is treated as numerical residual in diagnostics.
