@@ -1,0 +1,222 @@
+{
+  "kind": "freshstart-creature",
+  "version": 1,
+  "design": {
+    "name": "Custom",
+    "joints": [
+      {
+        "id": 1,
+        "x": -3,
+        "y": 0.15,
+        "isFoot": true
+      },
+      {
+        "id": 2,
+        "x": -2,
+        "y": 6
+      },
+      {
+        "id": 3,
+        "x": -1,
+        "y": 3.5
+      },
+      {
+        "id": 4,
+        "x": 0,
+        "y": 1
+      },
+      {
+        "id": 5,
+        "x": 1,
+        "y": 3.5
+      },
+      {
+        "id": 7,
+        "x": 2,
+        "y": 6
+      },
+      {
+        "id": 8,
+        "x": 3,
+        "y": 0.15,
+        "isFoot": true
+      },
+      {
+        "id": 9,
+        "x": -2,
+        "y": 3
+      },
+      {
+        "id": 10,
+        "x": 2,
+        "y": 3
+      }
+    ],
+    "bones": [
+      {
+        "id": 1,
+        "startJointId": 2,
+        "endJointId": 1
+      },
+      {
+        "id": 2,
+        "startJointId": 2,
+        "endJointId": 9
+      },
+      {
+        "id": 3,
+        "startJointId": 9,
+        "endJointId": 1
+      },
+      {
+        "id": 4,
+        "startJointId": 10,
+        "endJointId": 7
+      },
+      {
+        "id": 5,
+        "startJointId": 7,
+        "endJointId": 8
+      },
+      {
+        "id": 6,
+        "startJointId": 8,
+        "endJointId": 10
+      },
+      {
+        "id": 7,
+        "startJointId": 9,
+        "endJointId": 4
+      },
+      {
+        "id": 8,
+        "startJointId": 4,
+        "endJointId": 3
+      },
+      {
+        "id": 9,
+        "startJointId": 3,
+        "endJointId": 9
+      },
+      {
+        "id": 10,
+        "startJointId": 5,
+        "endJointId": 10
+      },
+      {
+        "id": 11,
+        "startJointId": 5,
+        "endJointId": 4
+      },
+      {
+        "id": 12,
+        "startJointId": 4,
+        "endJointId": 10
+      }
+    ],
+    "muscles": [
+      {
+        "id": 1,
+        "startBoneId": 9,
+        "endBoneId": 2,
+        "canExpand": true
+      },
+      {
+        "id": 2,
+        "startBoneId": 10,
+        "endBoneId": 4,
+        "canExpand": true
+      },
+      {
+        "id": 3,
+        "startBoneId": 8,
+        "endBoneId": 11,
+        "canExpand": true
+      },
+      {
+        "id": 4,
+        "startBoneId": 2,
+        "endBoneId": 4,
+        "canExpand": true
+      },
+      {
+        "id": 5,
+        "startBoneId": 3,
+        "endBoneId": 7,
+        "canExpand": true
+      },
+      {
+        "id": 6,
+        "startBoneId": 12,
+        "endBoneId": 6,
+        "canExpand": true
+      },
+      {
+        "id": 7,
+        "startBoneId": 1,
+        "endBoneId": 8,
+        "canExpand": true
+      },
+      {
+        "id": 8,
+        "startBoneId": 5,
+        "endBoneId": 11,
+        "canExpand": true
+      },
+      {
+        "id": 9,
+        "startBoneId": 3,
+        "endBoneId": 6,
+        "canExpand": true
+      },
+      {
+        "id": 10,
+        "startBoneId": 2,
+        "endBoneId": 1,
+        "canExpand": true
+      },
+      {
+        "id": 11,
+        "startBoneId": 4,
+        "endBoneId": 5,
+        "canExpand": true
+      },
+      {
+        "id": 12,
+        "startBoneId": 8,
+        "endBoneId": 4,
+        "canExpand": true
+      },
+      {
+        "id": 13,
+        "startBoneId": 11,
+        "endBoneId": 2,
+        "canExpand": true
+      },
+      {
+        "id": 14,
+        "startBoneId": 3,
+        "endBoneId": 1,
+        "canExpand": true
+      }
+    ],
+    "appearance": {
+      "version": 1,
+      "googlyEyes": [
+        {
+          "jointId": 2,
+          "domeRadius": 0.18,
+          "offsetX": -0.12,
+          "offsetY": 0.06
+        },
+        {
+          "jointId": 2,
+          "domeRadius": 0.18,
+          "offsetX": 0.12,
+          "offsetY": 0.06
+        }
+      ],
+      "bodyParts": []
+    }
+  }
+}

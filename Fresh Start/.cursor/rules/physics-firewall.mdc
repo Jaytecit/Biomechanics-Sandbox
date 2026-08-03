@@ -1,0 +1,31 @@
+---
+description: Protect Fresh Start Rapier physics from parent soft-body influence during feature ports
+alwaysApply: true
+---
+
+# Fresh Start physics firewall
+
+When porting features from the parent Biomechanics Sandbox into Fresh Start:
+
+## Never
+
+- Copy or adapt parent `physics.ts`, `physicsConstants.ts`, `aero.ts`, `hingeStops.ts`, `solidSegments.ts`, or parent physics smoke/calibration artifacts
+- Use parent decision logs / flight audits / feel notes to retune Fresh Start constants
+- Port parent `neat.ts` — keep Fresh Start MLP + GA
+- Step Rapier with variable/render dt; bypass the fixed-dt accumulator
+- Scatter new physics magic numbers outside `src/physics/constants.ts`
+- Apply muscle/world forces without `resetForces`/`resetTorques` each physics step
+- Introduce unseeded `Math.random` on physics or brain evaluation paths
+- Change collision groups without deliberately extending the spawn/world scheme
+
+## Always
+
+- Rewrite selected features against Fresh Start modules (`creature/`, `physics/`, `brain/`, `editor/`, `sim/`)
+- Gate unfinished ports behind `src/port/featureFlags.ts` (default off)
+- For new Rapier capabilities: write an ADR from `docs/CAPABILITY_ADR_TEMPLATE.md` first
+- Run `npm run smoke:all` after physics-adjacent changes
+- Only implement IDs marked `[x]` in `FEATURE_PORT_CHECKLIST.md`
+
+Selection source of truth: `FEATURE_PORT_CHECKLIST.md`  
+Backlog: `FEATURE_PORT_BACKLOG.md`  
+Firewall doc: `docs/PHYSICS_FIREWALL.md`
