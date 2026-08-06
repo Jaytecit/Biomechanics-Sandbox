@@ -205,15 +205,15 @@
       "googlyEyes": [
         {
           "jointId": 2,
-          "domeRadius": 0.18,
-          "offsetX": -0.12,
-          "offsetY": 0.06
+          "domeRadius": 0.36,
+          "offsetX": -0.48,
+          "offsetY": 0
         },
         {
           "jointId": 2,
-          "domeRadius": 0.18,
-          "offsetX": 0.12,
-          "offsetY": 0.06
+          "domeRadius": 0.36,
+          "offsetX": 0.48,
+          "offsetY": 0
         }
       ],
       "bodyParts": []

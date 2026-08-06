@@ -1,5 +1,6 @@
 import { nextDriveGroupId, normalizeDriveGroup } from '../brain/driveGroups';
 import type { BoneDef, CreatureDesign, JointDef, MuscleDef } from '../creature/types';
+import { isAeroType } from './aeroValidation';
 
 /** Move a joint; bones/muscles resize from joint endpoints (no stored lengths). */
 export function moveJoint(
@@ -50,6 +51,20 @@ export function updateBone(
       const next = { ...b, ...patch };
       if (patch.aeroArea !== undefined && patch.aeroArea <= 0) {
         delete next.aeroArea;
+        delete next.aeroType;
+      } else if (
+        patch.aeroArea !== undefined &&
+        patch.aeroArea > 0 &&
+        next.aeroType === undefined
+      ) {
+        next.aeroType = 'glider';
+      }
+      if ('aeroType' in patch) {
+        if (patch.aeroType === undefined || !isAeroType(patch.aeroType)) {
+          delete next.aeroType;
+        } else {
+          next.aeroType = patch.aeroType;
+        }
       }
       return next;
     }),
@@ -119,6 +134,17 @@ export function deleteJoint(design: CreatureDesign, jointId: number): CreatureDe
       .filter((b) => b.startJointId === jointId || b.endJointId === jointId)
       .map((b) => b.id),
   );
+  const appearance = design.appearance
+    ? {
+        ...design.appearance,
+        googlyEyes: design.appearance.googlyEyes.filter((e) => e.jointId !== jointId),
+        bodyParts: design.appearance.bodyParts.filter(
+          (p) =>
+            p.jointId !== jointId &&
+            (p.boneId === undefined || !removedBoneIds.has(p.boneId)),
+        ),
+      }
+    : undefined;
   return {
     ...design,
     name: 'Custom',
@@ -127,11 +153,18 @@ export function deleteJoint(design: CreatureDesign, jointId: number): CreatureDe
     muscles: design.muscles.filter(
       (m) => !removedBoneIds.has(m.startBoneId) && !removedBoneIds.has(m.endBoneId),
     ),
+    appearance,
   };
 }
 
 /** Remove a bone and muscles attached to it. */
 export function deleteBone(design: CreatureDesign, boneId: number): CreatureDesign {
+  const appearance = design.appearance
+    ? {
+        ...design.appearance,
+        bodyParts: design.appearance.bodyParts.filter((p) => p.boneId !== boneId),
+      }
+    : undefined;
   return {
     ...design,
     name: 'Custom',
@@ -139,6 +172,7 @@ export function deleteBone(design: CreatureDesign, boneId: number): CreatureDesi
     muscles: design.muscles.filter(
       (m) => m.startBoneId !== boneId && m.endBoneId !== boneId,
     ),
+    appearance,
   };
 }
 

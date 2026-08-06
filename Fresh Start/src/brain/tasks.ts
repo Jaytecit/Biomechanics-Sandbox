@@ -14,7 +14,17 @@ import {
   updateJumpFlightTrackers,
   type TaskEpisodeMetrics,
 } from './taskScore';
-import { avgJointX } from './observations';
+import {
+  activeCourseMarkers,
+  emptyCourseMarkerAccum,
+  updateCourseMarkerAccum,
+} from './courseMarkers';
+import {
+  activeScoreRegions,
+  emptyScoreRegionAccum,
+  updateScoreRegionAccum,
+} from './scoreRegions';
+import { avgJointVelX, avgJointX } from './observations';
 import type { NetworkShape, TaskId } from './types';
 
 export type { EpisodeResult } from './fitness';
@@ -64,20 +74,55 @@ export function evaluateTaskEpisode(
   let footLifts = 0;
   let peakHeight = 0;
   let airTime = 0;
+  let airHeightIntegral = 0;
+  let meanAirHeight = 0;
   let uprightSum = 0;
   let uprightSteps = 0;
+  let peakSpeed = 0;
+  let peakDistance = 0;
+  let regionAccum = emptyScoreRegionAccum();
+  const regions = activeScoreRegions(sim.getEnvironment());
+  let courseAccum = emptyCourseMarkerAccum(
+    activeCourseMarkers(sim.getEnvironment()),
+  );
+  const markers = activeCourseMarkers(sim.getEnvironment());
   const planted = createFootLiftState(creature.joints.length);
   const steps = Math.round(episodeSeconds / FIXED_DT);
+  let episodeSimTime = 0;
 
   for (let i = 0; i < steps; i++) {
     sim.step(FIXED_DT);
-    footLifts += updateFootLiftState(creature, planted);
+    episodeSimTime = (i + 1) * FIXED_DT;
+    const terrain = sim.activeTerrain();
+    peakDistance = Math.max(peakDistance, avgJointX(creature) - startX);
+    footLifts += updateFootLiftState(creature, planted, terrain);
     uprightSum += instantUprightQuality(creature);
     uprightSteps++;
-    const track = updateJumpFlightTrackers(creature, FIXED_DT, peakHeight, airTime);
+    peakSpeed = Math.max(peakSpeed, avgJointVelX(creature));
+    const track = updateJumpFlightTrackers(
+      creature,
+      FIXED_DT,
+      peakHeight,
+      airTime,
+      airHeightIntegral,
+    );
     peakHeight = track.peakHeight;
     airTime = track.airTime;
-    const fall = updateFallState(creature, fallTime, FIXED_DT);
+    airHeightIntegral = track.airHeightIntegral;
+    meanAirHeight = track.meanAirHeight;
+    regionAccum = updateScoreRegionAccum(
+      creature,
+      regions,
+      FIXED_DT,
+      regionAccum,
+    );
+    courseAccum = updateCourseMarkerAccum(
+      creature,
+      markers,
+      episodeSimTime,
+      courseAccum,
+    );
+    const fall = updateFallState(creature, fallTime, FIXED_DT, terrain);
     fallTime = fall.fallTime;
     if (fall.fell) {
       fell = true;
@@ -95,5 +140,11 @@ export function evaluateTaskEpisode(
     peakHeight,
     airTime,
     uprightMean,
+    meanAirHeight,
+    regionAccum,
+    courseAccum,
+    peakSpeed,
+    episodeSimTime,
+    peakDistance,
   );
 }

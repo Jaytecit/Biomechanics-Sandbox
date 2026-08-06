@@ -1,4 +1,6 @@
-# Fresh Start — Keiwan-like Physics Sandbox
+# Solemn Sandbox
+
+**A serious environment to carry out silly experiments.**
 
 Phase 1: a clean rigid-body creature sandbox inspired by
 [Evolution by Keiwan](https://keiwando.com/evolution/).

@@ -1,3 +1,5 @@
+import type { EnvTerrain } from '../env/types';
+import { sampleTerrainHeight } from '../env/terrainMath';
 import type { SpawnedCreature } from '../physics/spawn';
 import {
   DISTANCE_PER_LIFT,
@@ -11,7 +13,12 @@ import {
   PLANT_Y,
   UPRIGHT_QUALITY_FLOOR,
 } from './constants';
-import { avgJointX, footJointIndices, maxHeadY, minJointY } from './observations';
+import {
+  avgJointX,
+  footJointIndices,
+  maxHeadY,
+  minJointClearance,
+} from './observations';
 
 export interface EpisodeResult {
   fitness: number;
@@ -45,22 +52,24 @@ export function createFootLiftState(jointCount: number): FootLiftState {
 /**
  * Update planted flags; return how many new forward plant→clear lifts occurred this step.
  * Uses marked feet when present; otherwise all joints (C1.1).
- * Hysteresis: planted when y < PLANT_Y; clear when y > LIFT_Y after planted.
+ * Hysteresis: planted when clearance < PLANT_Y; clear when clearance > LIFT_Y.
+ * Clearance is jointY − terrain surface (absolute Y on flat ground).
  * A clear counts only if this contact's plant X advanced ≥ MIN_STEP_PROGRESS
  * since the last counted plant (or first baseline plant).
  */
 export function updateFootLiftState(
   creature: SpawnedCreature,
   state: FootLiftState,
+  terrain?: EnvTerrain | null,
 ): number {
   const joints = creature.joints;
   const indices = footJointIndices(creature);
   let lifts = 0;
   for (const i of indices) {
     const t = joints[i].body.translation();
-    const y = t.y;
     const x = t.x;
-    if (y < PLANT_Y) {
+    const clearance = t.y - sampleTerrainHeight(terrain, x);
+    if (clearance < PLANT_Y) {
       if (!state.planted[i]) {
         state.planted[i] = true;
         state.currentPlantX[i] = x;
@@ -69,7 +78,7 @@ export function updateFootLiftState(
           state.hasPlantX[i] = true;
         }
       }
-    } else if (state.planted[i] && y > LIFT_Y) {
+    } else if (state.planted[i] && clearance > LIFT_Y) {
       state.planted[i] = false;
       if (
         state.hasPlantX[i] &&
@@ -137,9 +146,10 @@ export function updateFallState(
   creature: SpawnedCreature,
   fallTime: number,
   dt: number,
+  terrain?: EnvTerrain | null,
 ): { fallTime: number; fell: boolean } {
-  const y = minJointY(creature);
-  if (y < FALL_Y_THRESHOLD) {
+  const clearance = minJointClearance(creature, terrain);
+  if (clearance < FALL_Y_THRESHOLD) {
     const next = fallTime + dt;
     return { fallTime: next, fell: next >= FALL_TIME_LIMIT };
   }

@@ -13,9 +13,18 @@ export interface GooglyEyeDef {
 export interface BodyPartAttachment {
   /** Catalog asset id (see bodyPartCatalog). */
   assetId: string;
-  /** Anchor joint id. */
-  jointId: number;
+  /** Prefer bone anchor when set. */
+  boneId?: number;
+  /** Joint anchor (when not bone-anchored). */
+  jointId?: number;
+  /** 0..1 along bone start→end (default 0.5). */
+  along?: number;
+  /** Lateral offset in design/world units from the anchor. */
+  offsetX?: number;
+  offsetY?: number;
   scale?: number;
+  /** Extra rotation in radians, added on top of bone angle (if any). */
+  rotation?: number;
   mirror?: boolean;
   tint?: string;
 }

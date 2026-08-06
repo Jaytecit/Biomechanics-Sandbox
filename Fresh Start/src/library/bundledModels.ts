@@ -1,10 +1,12 @@
 /**
  * Default / bundled models library (F3).
  * Fresh Start–authored bodies only (from presets + disco dancer).
+ * Appearance starts empty — googly eyes are an opt-in joint add-on.
  */
 import { emptyAppearance, type AppearanceRig } from '../appearance/types';
 import { DISCO_DANCER } from '../creature/discoDancer';
 import { PRESETS } from '../creature/presets';
+import { ULTI_GROOVE_BOT_II } from '../creature/ultiGrooveBotII';
 import { cloneDesign, type CreatureDesign } from '../creature/types';
 
 export interface BundledModel {
@@ -15,35 +17,26 @@ export interface BundledModel {
   tags: string[];
 }
 
-function eyesOnHighestJoint(design: CreatureDesign): AppearanceRig {
-  if (design.joints.length === 0) return emptyAppearance();
-  let best = design.joints[0];
-  for (const j of design.joints) {
-    if (j.y > best.y) best = j;
-  }
-  return {
-    version: 1,
-    googlyEyes: [
-      { jointId: best.id, domeRadius: 0.18, offsetX: -0.12, offsetY: 0.06 },
-      { jointId: best.id, domeRadius: 0.18, offsetX: 0.12, offsetY: 0.06 },
-    ],
-    bodyParts: [],
-  };
-}
-
 export const BUNDLED_MODELS: BundledModel[] = [
   ...PRESETS.map((p) => ({
     id: `builtin_${p.name.toLowerCase().replace(/\s+/g, '_')}`,
     displayName: p.name,
     design: cloneDesign(p),
-    appearance: eyesOnHighestJoint(p),
+    appearance: emptyAppearance(),
     tags: ['preset'],
   })),
   {
     id: 'builtin_disco_dancer',
     displayName: DISCO_DANCER.name,
     design: cloneDesign(DISCO_DANCER),
-    appearance: eyesOnHighestJoint(DISCO_DANCER),
+    appearance: emptyAppearance(),
+    tags: ['disco', 'preset'],
+  },
+  {
+    id: 'builtin_ulti_groove_bot_ii',
+    displayName: ULTI_GROOVE_BOT_II.name,
+    design: cloneDesign(ULTI_GROOVE_BOT_II),
+    appearance: emptyAppearance(),
     tags: ['disco', 'preset'],
   },
 ];

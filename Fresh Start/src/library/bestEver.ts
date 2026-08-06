@@ -15,7 +15,7 @@ export interface BestEverEntry {
   updatedAt: number;
 }
 
-function bodyFingerprint(design: CreatureDesign): string {
+export function bodyFingerprint(design: CreatureDesign): string {
   const parts = [
     design.joints.length,
     design.bones.length,

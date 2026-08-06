@@ -1,6 +1,12 @@
 /** Product zone metadata (B1). No physics — UI / task routing only. */
 
-export type ZoneId = 'flying' | 'motor' | 'walking' | 'jumping' | 'free';
+export type ZoneId =
+  | 'flying'
+  | 'motor'
+  | 'walking'
+  | 'jumping'
+  | 'free'
+  | 'disco';
 
 export interface ZoneDef {
   id: ZoneId;
@@ -18,6 +24,7 @@ export const ZONE_ORDER: ZoneId[] = [
   'flying',
   'motor',
   'free',
+  'disco',
 ];
 
 export const ZONES: Record<ZoneId, ZoneDef> = {
@@ -25,7 +32,7 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
     id: 'walking',
     title: 'Walking',
     shortLabel: 'Walk',
-    description: 'Locomotion on flat ground (built-in run task).',
+    description: 'Locomotion — flat run or rough hills.',
     accent: '#3d9a6a',
     defaultTask: 'run',
   },
@@ -59,6 +66,16 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
     shortLabel: 'Free',
     description: 'Sandbox — pick any task; no equipment gates yet.',
     accent: '#9a7ad4',
+    defaultTask: 'run',
+  },
+  disco: {
+    id: 'disco',
+    title: 'Disco',
+    shortLabel: 'Disco',
+    description:
+      'Audio-reactive dance floor — lighting FX, side walls, frequency → muscle routing.',
+    accent: '#e05aad',
+    /** Placeholder; disco zone does not evolve against a task. */
     defaultTask: 'run',
   },
 };

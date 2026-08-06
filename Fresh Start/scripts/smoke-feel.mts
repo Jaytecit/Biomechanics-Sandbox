@@ -15,8 +15,8 @@ import { FIXED_DT } from '../src/physics/constants.ts';
 import { Simulation } from '../src/sim/simulation.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** Max |Δx| in 2s after sine→idle on the custom biped fixture. */
-const MAX_IDLE_COAST = 0.35;
+/** Max |Δx| in 2s after sine→idle on the custom biped fixture (Oscillate @ 2.5 Hz). */
+const MAX_IDLE_COAST = 0.5;
 
 function muscleLength(sim: Simulation, index: number): number {
   const m = sim.muscles()[index];

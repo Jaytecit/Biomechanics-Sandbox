@@ -1,11 +1,39 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
+import {
+  bodyPartHandles,
+  hitBodyPartHandle,
+  hitTestBodyPart,
+  moveBodyPart,
+  removeBodyPart,
+  resizeBodyPart,
+  type BodyPartHandle,
+} from '../appearance/bodyPartOps';
 import type { CreatureDesign } from '../creature/types';
 import { nextId } from '../creature/types';
-import { createCamera, screenToWorld, type Camera } from '../sim/Camera';
+import { isFeatureEnabled } from '../port/featureFlags';
+import { createCamera, screenToWorld, worldToScreen, type Camera } from '../sim/Camera';
 import { clearCanvas, drawDesign, drawGrid, drawGround } from '../sim/render';
 import { deleteBone, deleteJoint, deleteMuscle, moveJoint } from './editOps';
 import { snapToGrid } from './grid';
-import type { EditorSelection } from './selection';
+import {
+  jointsSelection,
+  selectedJointIds,
+  type EditorSelection,
+} from './selection';
+import {
+  handleWorldPos,
+  hitSelectionHandle,
+  jointsInRect,
+  moveSelection,
+  pointInFootprint,
+  rotateSelection,
+  scaleSelection,
+  selectionCentroid,
+  selectionFootprint,
+  selectionHandles,
+  type SelectionFootprint,
+  type SelectionHandleId,
+} from './selectionOps';
 
 export type EditTool = 'joint' | 'bone' | 'muscle' | 'select';
 export type { EditorSelection } from './selection';
@@ -17,6 +45,11 @@ interface Props {
   snapEnabled: boolean;
   selection?: EditorSelection;
   onSelect?: (sel: EditorSelection) => void;
+  /**
+   * Optional shared camera — keeps pan/zoom across tool/selection changes and
+   * remounts (e.g. leaving Edit for Physics settle and returning).
+   */
+  cameraRef?: MutableRefObject<Camera>;
 }
 
 type DragLink =
@@ -46,6 +79,55 @@ interface JointDrag {
   moved: boolean;
 }
 
+type PartDrag =
+  | {
+      kind: 'movePart';
+      index: number;
+      origin: CreatureDesign;
+      moved: boolean;
+    }
+  | {
+      kind: 'resizePart';
+      index: number;
+      handle: BodyPartHandle;
+      origin: CreatureDesign;
+      moved: boolean;
+    };
+
+type MarqueeDrag = {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  additive: boolean;
+};
+
+type SelectionTransformDrag =
+  | {
+      kind: 'move';
+      jointIds: number[];
+      origin: CreatureDesign;
+      startWx: number;
+      startWy: number;
+      moved: boolean;
+    }
+  | {
+      kind: 'scale';
+      jointIds: number[];
+      origin: CreatureDesign;
+      centroid: { x: number; y: number };
+      startDist: number;
+      moved: boolean;
+    }
+  | {
+      kind: 'rotate';
+      jointIds: number[];
+      origin: CreatureDesign;
+      centroid: { x: number; y: number };
+      startAngle: number;
+      moved: boolean;
+    };
+
 const MIN_JOINT_Y = 0.15;
 const JOINT_OCCUPY_EPS = 1e-6;
 
@@ -56,11 +138,16 @@ export function EditorCanvas({
   snapEnabled,
   selection = null,
   onSelect,
+  cameraRef,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const camRef = useRef<Camera>(createCamera());
+  const localCamRef = useRef<Camera>(createCamera());
+  const camRef = cameraRef ?? localCamRef;
   const linkDragRef = useRef<DragLink | null>(null);
   const jointDragRef = useRef<JointDrag | null>(null);
+  const partDragRef = useRef<PartDrag | null>(null);
+  const marqueeRef = useRef<MarqueeDrag | null>(null);
+  const selXformRef = useRef<SelectionTransformDrag | null>(null);
   const panRef = useRef({ active: false, lastX: 0, lastY: 0 });
   const designRef = useRef(design);
   const toolRef = useRef(tool);
@@ -68,8 +155,12 @@ export function EditorCanvas({
   const onChangeRef = useRef(onChange);
   const selectionRef = useRef(selection);
   const onSelectRef = useRef(onSelect);
-  // Don't clobber an in-progress joint drag with a stale prop snapshot.
-  if (!jointDragRef.current) {
+  // Don't clobber an in-progress drag with a stale prop snapshot.
+  if (
+    !jointDragRef.current &&
+    !partDragRef.current &&
+    !selXformRef.current
+  ) {
     designRef.current = design;
   }
   toolRef.current = tool;
@@ -77,6 +168,8 @@ export function EditorCanvas({
   onChangeRef.current = onChange;
   selectionRef.current = selection;
   onSelectRef.current = onSelect;
+
+  const multiSelectOn = () => isFeatureEnabled('editorMultiSelectTransforms');
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -101,14 +194,22 @@ export function EditorCanvas({
       const drag = linkDragRef.current;
       const jointDrag = jointDragRef.current;
       const sel = selectionRef.current;
+      const jointIds = selectedJointIds(sel);
+      const partIndex =
+        sel?.kind === 'bodyPart'
+          ? sel.index
+          : partDragRef.current?.index ?? null;
       drawDesign(ctx, camRef.current, w, h, designRef.current, {
         selectedJointId: jointDrag
           ? jointDrag.jointId
           : drag?.kind === 'bone'
             ? drag.fromId
-            : sel?.kind === 'joint'
-              ? sel.id
-              : null,
+            : null,
+        selectedJointIds: jointDrag
+          ? [jointDrag.jointId]
+          : jointIds.length > 0
+            ? jointIds
+            : null,
         selectedBoneId:
           drag?.kind === 'muscle'
             ? drag.fromId
@@ -116,6 +217,7 @@ export function EditorCanvas({
               ? sel.id
               : null,
         selectedMuscleId: sel?.kind === 'muscle' ? sel.id : null,
+        selectedBodyPartIndex: partIndex,
         hoverJointId: drag?.kind === 'bone' ? drag.hoverId : null,
         hoverBoneId: drag?.kind === 'muscle' ? drag.hoverId : null,
         dragPreview: drag
@@ -128,6 +230,51 @@ export function EditorCanvas({
             }
           : null,
       });
+
+      // Selection footprint + handles (C1.11).
+      if (multiSelectOn() && jointIds.length > 0) {
+        const fp = selectionFootprint(designRef.current, jointIds);
+        if (fp) {
+          drawSelectionFootprint(ctx, camRef.current, w, h, fp);
+        }
+      }
+
+      // Marquee overlay.
+      const marquee = marqueeRef.current;
+      if (marquee) {
+        const a = worldToScreen(camRef.current, w, h, marquee.startX, marquee.startY);
+        const b = worldToScreen(camRef.current, w, h, marquee.endX, marquee.endY);
+        const x = Math.min(a.x, b.x);
+        const y = Math.min(a.y, b.y);
+        const rw = Math.abs(b.x - a.x);
+        const rh = Math.abs(b.y - a.y);
+        ctx.fillStyle = 'rgba(240, 192, 64, 0.12)';
+        ctx.strokeStyle = 'rgba(240, 192, 64, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.fillRect(x, y, rw, rh);
+        ctx.strokeRect(x, y, rw, rh);
+        ctx.setLineDash([]);
+      }
+
+      // Env-style corner handles for the selected body part.
+      if (
+        isFeatureEnabled('spriteBodyParts') &&
+        partIndex !== null &&
+        partIndex !== undefined
+      ) {
+        const handles = bodyPartHandles(designRef.current, partIndex);
+        for (const hnd of handles) {
+          const p = worldToScreen(camRef.current, w, h, hnd.x, hnd.y);
+          ctx.fillStyle = '#f0c040';
+          ctx.strokeStyle = '#2a3340';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.rect(p.x - 5, p.y - 5, 10, 10);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
       raf = requestAnimationFrame(paint);
     };
     raf = requestAnimationFrame(paint);
@@ -198,8 +345,25 @@ export function EditorCanvas({
     return best;
   };
 
-  /** Right-click delete: joint > bone > muscle under cursor. */
+  const selectJoints = (ids: number[], additive: boolean) => {
+    if (additive) {
+      const prev = selectedJointIds(selectionRef.current);
+      onSelectRef.current?.(jointsSelection([...prev, ...ids]));
+    } else {
+      onSelectRef.current?.(jointsSelection(ids));
+    }
+  };
+
+  /** Right-click delete: body part > joint > bone > muscle under cursor. */
   const tryDeleteAt = (wx: number, wy: number, d: CreatureDesign): boolean => {
+    if (isFeatureEnabled('spriteBodyParts')) {
+      const partIdx = hitTestBodyPart(d, wx, wy);
+      if (partIdx != null) {
+        onChangeRef.current(removeBodyPart(d, partIdx));
+        onSelectRef.current?.(null);
+        return true;
+      }
+    }
     const jointId = hitJoint(wx, wy, d);
     if (jointId != null) {
       onChangeRef.current(deleteJoint(d, jointId));
@@ -216,6 +380,48 @@ export function EditorCanvas({
       return true;
     }
     return false;
+  };
+
+  const beginSelectionTransform = (
+    handle: SelectionHandleId | 'move',
+    jointIds: number[],
+    d: CreatureDesign,
+    wx: number,
+    wy: number,
+  ) => {
+    const centroid = selectionCentroid(d, jointIds);
+    if (!centroid) return;
+    if (handle === 'move') {
+      selXformRef.current = {
+        kind: 'move',
+        jointIds,
+        origin: d,
+        startWx: wx,
+        startWy: wy,
+        moved: false,
+      };
+      return;
+    }
+    if (handle === 'rotate') {
+      selXformRef.current = {
+        kind: 'rotate',
+        jointIds,
+        origin: d,
+        centroid,
+        startAngle: Math.atan2(wy - centroid.y, wx - centroid.x),
+        moved: false,
+      };
+      return;
+    }
+    const dist = Math.hypot(wx - centroid.x, wy - centroid.y);
+    selXformRef.current = {
+      kind: 'scale',
+      jointIds,
+      origin: d,
+      centroid,
+      startDist: Math.max(1e-4, dist),
+      moved: false,
+    };
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -240,12 +446,89 @@ export function EditorCanvas({
     if (e.button !== 0) return;
 
     const currentTool = toolRef.current;
+    const additive = e.shiftKey;
 
-    // Select tool: pick joint / bone / muscle (priority joint > bone > muscle).
+    // Select tool: body-part handles / parts, then joint > bone > muscle.
     if (currentTool === 'select') {
+      if (isFeatureEnabled('spriteBodyParts')) {
+        const sel = selectionRef.current;
+        if (sel?.kind === 'bodyPart') {
+          const handle = hitBodyPartHandle(d, sel.index, world.x, world.y);
+          if (handle) {
+            partDragRef.current = {
+              kind: 'resizePart',
+              index: sel.index,
+              handle,
+              origin: d,
+              moved: false,
+            };
+            return;
+          }
+        }
+        const partHit = hitTestBodyPart(d, world.x, world.y);
+        if (partHit != null) {
+          onSelectRef.current?.({ kind: 'bodyPart', index: partHit });
+          partDragRef.current = {
+            kind: 'movePart',
+            index: partHit,
+            origin: d,
+            moved: false,
+          };
+          return;
+        }
+      }
+
+      // C1.11: footprint handles / move before hit-testing individual joints.
+      if (multiSelectOn()) {
+        const jointIds = selectedJointIds(selectionRef.current);
+        if (jointIds.length > 0) {
+          const fp = selectionFootprint(d, jointIds);
+          if (fp) {
+            const handle = hitSelectionHandle(world.x, world.y, fp);
+            if (handle) {
+              beginSelectionTransform(handle, jointIds, d, world.x, world.y);
+              return;
+            }
+            if (pointInFootprint(world.x, world.y, fp)) {
+              // Clicking a joint inside the box still selects/drags that joint
+              // unless we're starting a group move on empty interior.
+              const jointHit = hitJoint(world.x, world.y, d);
+              if (jointHit == null || !jointIds.includes(jointHit)) {
+                beginSelectionTransform('move', jointIds, d, world.x, world.y);
+                return;
+              }
+            }
+          }
+        }
+      }
+
       const jointHit = hitJoint(world.x, world.y, d);
       if (jointHit != null) {
-        onSelectRef.current?.({ kind: 'joint', id: jointHit });
+        if (multiSelectOn()) {
+          const prev = selectedJointIds(selectionRef.current);
+          let ids: number[];
+          if (additive) {
+            ids = prev.includes(jointHit)
+              ? prev.filter((id) => id !== jointHit)
+              : [...prev, jointHit];
+          } else if (prev.includes(jointHit) && prev.length > 1) {
+            ids = prev;
+          } else {
+            ids = [jointHit];
+          }
+          selectJoints(ids, false);
+          if (ids.length > 1) {
+            beginSelectionTransform('move', ids, d, world.x, world.y);
+          } else if (ids.length === 1) {
+            jointDragRef.current = {
+              jointId: ids[0],
+              origin: d,
+              moved: false,
+            };
+          }
+          return;
+        }
+        onSelectRef.current?.(jointsSelection([jointHit]));
         jointDragRef.current = {
           jointId: jointHit,
           origin: d,
@@ -263,6 +546,19 @@ export function EditorCanvas({
         onSelectRef.current?.({ kind: 'muscle', id: muscleHit });
         return;
       }
+
+      // Empty space: marquee (C1.11) or clear.
+      if (multiSelectOn()) {
+        marqueeRef.current = {
+          startX: world.x,
+          startY: world.y,
+          endX: world.x,
+          endY: world.y,
+          additive,
+        };
+        if (!additive) onSelectRef.current?.(null);
+        return;
+      }
       onSelectRef.current?.(null);
       return;
     }
@@ -271,7 +567,7 @@ export function EditorCanvas({
     if (currentTool === 'joint') {
       const jointHit = hitJoint(world.x, world.y, d);
       if (jointHit != null) {
-        onSelectRef.current?.({ kind: 'joint', id: jointHit });
+        onSelectRef.current?.(jointsSelection([jointHit]));
         jointDragRef.current = {
           jointId: jointHit,
           origin: d,
@@ -288,7 +584,7 @@ export function EditorCanvas({
       );
       if (exists) return;
       const id = nextId(d.joints);
-      onSelectRef.current?.({ kind: 'joint', id });
+      onSelectRef.current?.(jointsSelection([id]));
       onChangeRef.current({
         ...d,
         name: 'Custom',
@@ -344,6 +640,52 @@ export function EditorCanvas({
     const { x, y, w, h } = clientToLocal(e);
     const world = screenToWorld(camRef.current, w, h, x, y);
 
+    const marquee = marqueeRef.current;
+    if (marquee) {
+      marquee.endX = world.x;
+      marquee.endY = world.y;
+      return;
+    }
+
+    const selXform = selXformRef.current;
+    if (selXform) {
+      if (selXform.kind === 'move') {
+        const dx = world.x - selXform.startWx;
+        const dy = world.y - selXform.startWy;
+        designRef.current = moveSelection(
+          selXform.origin,
+          selXform.jointIds,
+          dx,
+          dy,
+        );
+      } else if (selXform.kind === 'scale') {
+        const dist = Math.hypot(
+          world.x - selXform.centroid.x,
+          world.y - selXform.centroid.y,
+        );
+        const factor = dist / selXform.startDist;
+        designRef.current = scaleSelection(
+          selXform.origin,
+          selXform.jointIds,
+          factor,
+          selXform.centroid,
+        );
+      } else {
+        const angle = Math.atan2(
+          world.y - selXform.centroid.y,
+          world.x - selXform.centroid.x,
+        );
+        designRef.current = rotateSelection(
+          selXform.origin,
+          selXform.jointIds,
+          angle - selXform.startAngle,
+          selXform.centroid,
+        );
+      }
+      selXform.moved = true;
+      return;
+    }
+
     const jointDrag = jointDragRef.current;
     if (jointDrag) {
       let { x: nx, y: ny } = snapToGrid(world.x, world.y, snapRef.current);
@@ -356,6 +698,27 @@ export function EditorCanvas({
       if (occupied) return;
       designRef.current = moveJoint(designRef.current, jointDrag.jointId, nx, ny);
       jointDrag.moved = true;
+      return;
+    }
+
+    const partDrag = partDragRef.current;
+    if (partDrag) {
+      if (partDrag.kind === 'movePart') {
+        designRef.current = moveBodyPart(
+          designRef.current,
+          partDrag.index,
+          world.x,
+          world.y,
+        );
+      } else {
+        designRef.current = resizeBodyPart(
+          designRef.current,
+          partDrag.index,
+          world.x,
+          world.y,
+        );
+      }
+      partDrag.moved = true;
       return;
     }
 
@@ -389,6 +752,36 @@ export function EditorCanvas({
       return;
     }
 
+    const marquee = marqueeRef.current;
+    if (marquee) {
+      marqueeRef.current = null;
+      if (e.button !== 0) return;
+      const ids = jointsInRect(
+        designRef.current,
+        marquee.startX,
+        marquee.startY,
+        marquee.endX,
+        marquee.endY,
+      );
+      if (ids.length === 0) {
+        if (!marquee.additive) onSelectRef.current?.(null);
+        return;
+      }
+      selectJoints(ids, marquee.additive);
+      return;
+    }
+
+    const selXform = selXformRef.current;
+    if (selXform) {
+      selXformRef.current = null;
+      if (e.button === 0 && selXform.moved) {
+        onChangeRef.current(designRef.current);
+      } else {
+        designRef.current = selXform.origin;
+      }
+      return;
+    }
+
     const jointDrag = jointDragRef.current;
     if (jointDrag) {
       jointDragRef.current = null;
@@ -396,6 +789,17 @@ export function EditorCanvas({
         onChangeRef.current(designRef.current);
       } else {
         designRef.current = jointDrag.origin;
+      }
+      return;
+    }
+
+    const partDrag = partDragRef.current;
+    if (partDrag) {
+      partDragRef.current = null;
+      if (e.button === 0 && partDrag.moved) {
+        onChangeRef.current(designRef.current);
+      } else {
+        designRef.current = partDrag.origin;
       }
       return;
     }
@@ -469,6 +873,60 @@ export function EditorCanvas({
       onContextMenu={(e) => e.preventDefault()}
     />
   );
+}
+
+function drawSelectionFootprint(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  fp: SelectionFootprint,
+): void {
+  const corners: SelectionHandleId[] = ['nw', 'ne', 'se', 'sw'];
+  ctx.save();
+  ctx.strokeStyle = 'rgba(240, 192, 64, 0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  for (let i = 0; i < corners.length; i++) {
+    const p = handleWorldPos(fp, corners[i]);
+    const s = worldToScreen(cam, w, h, p.x, p.y);
+    if (i === 0) ctx.moveTo(s.x, s.y);
+    else ctx.lineTo(s.x, s.y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  for (const id of selectionHandles()) {
+    const p = handleWorldPos(fp, id);
+    const s = worldToScreen(cam, w, h, p.x, p.y);
+    if (id === 'rotate') {
+      const topMid = { x: fp.cx, y: fp.cy + fp.hh };
+      const a = worldToScreen(cam, w, h, topMid.x, topMid.y);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(s.x, s.y);
+      ctx.strokeStyle = 'rgba(240, 192, 64, 0.7)';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 220, 120, 0.95)';
+      ctx.fill();
+      ctx.strokeStyle = '#2a3340';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#f0c040';
+      ctx.strokeStyle = '#2a3340';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.rect(s.x - 5, s.y - 5, 10, 10);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 function distToSegment(

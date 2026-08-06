@@ -1,8 +1,13 @@
 import {
   drawGooglyEye,
+  GOOGLY_BEAD_FRAC,
+  GOOGLY_DOME_RADIUS,
+  resolveGooglyEyeOffset,
+  restGooglyPupil,
   stepGooglyEye,
 } from '../appearance/googlyEyes';
-import type { AppearanceRig } from '../appearance/types';
+import { resolveBodyPartPose } from '../appearance/bodyPartOps';
+import type { AppearanceRig, BodyPartAttachment } from '../appearance/types';
 import { getBodyPart, getBodyPartImage } from '../appearance/bodyPartCatalog';
 import { driveGroupStrokeColor, normalizeDriveGroup } from '../brain/driveGroups';
 import type { CreatureDesign } from '../creature/types';
@@ -10,7 +15,70 @@ import { EDITOR_GRID } from '../editor/grid';
 import { GROUND_Y } from '../physics/constants';
 import { isFeatureEnabled } from '../port/featureFlags';
 import { type Camera, screenToWorld, worldToScreen } from './Camera';
-import type { SimulationSnapshot } from './simulation';
+import type { EnvCourseMarker } from '../env/types';
+import type { AgentSnapshot, SimulationSnapshot } from './simulation';
+
+/** Resolve sprite pose from a live agent (bone- or joint-anchored). */
+function resolveAgentBodyPartPose(
+  agent: Pick<AgentSnapshot, 'joints' | 'bones'>,
+  part: BodyPartAttachment,
+): { x: number; y: number; angle: number } | null {
+  const rot = part.rotation ?? 0;
+  if (part.boneId !== undefined) {
+    const bone = agent.bones.find((b) => b.id === part.boneId);
+    if (!bone) return null;
+    // Bone body angle is capsule local-Y along length; sprite follows bone tangent.
+    const baseAngle = bone.angle + Math.PI / 2;
+    const t = Math.min(1, Math.max(0, part.along ?? 0.5));
+    // Project along bone length from center: (t - 0.5) * full length
+    const alongOff = (t - 0.5) * bone.halfLength * 2;
+    const ax = Math.cos(baseAngle);
+    const ay = Math.sin(baseAngle);
+    return {
+      x: bone.x + ax * alongOff + (part.offsetX ?? 0),
+      y: bone.y + ay * alongOff + (part.offsetY ?? 0),
+      angle: baseAngle + rot,
+    };
+  }
+  if (part.jointId !== undefined) {
+    const joint = agent.joints.find((j) => j.id === part.jointId);
+    if (!joint) return null;
+    return {
+      x: joint.x + (part.offsetX ?? 0),
+      y: joint.y + (part.offsetY ?? 0),
+      angle: rot,
+    };
+  }
+  return null;
+}
+
+function drawBodyPartSprite(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  part: BodyPartAttachment,
+  pose: { x: number; y: number; angle: number },
+  selected = false,
+): void {
+  const def = getBodyPart(part.assetId);
+  const img = getBodyPartImage(part.assetId);
+  if (!def || !img) return;
+  const p = worldToScreen(cam, w, h, pose.x, pose.y);
+  // scale is world units (matches editor footprints / creature proportions).
+  const scale = (part.scale ?? def.defaultScale) * cam.zoom;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(-pose.angle);
+  if (part.mirror) ctx.scale(-1, 1);
+  ctx.drawImage(img, -scale * def.pivotX, -scale * def.pivotY, scale, scale);
+  if (selected) {
+    ctx.strokeStyle = '#f0c040';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-scale * 0.5, -scale * 0.5, scale, scale);
+  }
+  ctx.restore();
+}
 
 export function clearCanvas(
   ctx: CanvasRenderingContext2D,
@@ -152,13 +220,204 @@ function drawGroundDistanceMarks(
   ctx.restore();
 }
 
+export function drawObstacles(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  obstacles: SimulationSnapshot['obstacles'],
+): void {
+  if (!obstacles || obstacles.length === 0) return;
+  for (const o of obstacles) {
+    const c = worldToScreen(cam, w, h, o.x, o.y);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(-o.rot);
+    const rw = o.hx * 2 * cam.zoom;
+    const rh = o.hy * 2 * cam.zoom;
+    ctx.fillStyle = obstacleFill(o.kind);
+    ctx.strokeStyle = 'rgba(180, 200, 220, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.strokeRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.restore();
+  }
+}
+
+/** C2.9 — translucent score-only AABB overlays. */
+export function drawScoreRegions(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  regions: SimulationSnapshot['scoreRegions'] | undefined,
+): void {
+  if (!regions || regions.length === 0) return;
+  for (const r of regions) {
+    const c = worldToScreen(cam, w, h, r.x, r.y);
+    const rw = r.w * cam.zoom;
+    const rh = r.h * cam.zoom;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (r.kind === 'penalty') {
+      ctx.fillStyle = 'rgba(190, 70, 70, 0.28)';
+      ctx.strokeStyle = 'rgba(220, 110, 100, 0.75)';
+    } else {
+      ctx.fillStyle = 'rgba(70, 160, 100, 0.28)';
+      ctx.strokeStyle = 'rgba(110, 200, 140, 0.75)';
+    }
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.strokeRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
+
+/** C2.10 — translucent course marker overlays (start / checkpoint / finish). */
+export function drawCourseMarkers(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  markers: EnvCourseMarker[] | SimulationSnapshot['courseMarkers'] | undefined,
+): void {
+  if (!markers || markers.length === 0) return;
+  for (const m of markers) {
+    const c = worldToScreen(cam, w, h, m.x, m.y);
+    const rw = m.w * cam.zoom;
+    const rh = m.h * cam.zoom;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (m.kind === 'start') {
+      ctx.fillStyle = 'rgba(60, 200, 220, 0.28)';
+      ctx.strokeStyle = 'rgba(90, 230, 240, 0.85)';
+    } else if (m.kind === 'checkpoint') {
+      ctx.fillStyle = 'rgba(220, 160, 50, 0.28)';
+      ctx.strokeStyle = 'rgba(240, 190, 70, 0.85)';
+    } else {
+      ctx.fillStyle = 'rgba(140, 220, 60, 0.28)';
+      ctx.strokeStyle = 'rgba(170, 240, 90, 0.85)';
+    }
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.strokeRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.setLineDash([]);
+    const label =
+      m.kind === 'checkpoint'
+        ? `CP${(m.order ?? 0) + 1}`
+        : m.kind === 'start'
+          ? 'START'
+          : 'FINISH';
+    ctx.font = '600 10px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle =
+      m.kind === 'start'
+        ? 'rgba(160, 240, 250, 0.95)'
+        : m.kind === 'checkpoint'
+          ? 'rgba(250, 210, 120, 0.95)'
+          : 'rgba(190, 250, 120, 0.95)';
+    ctx.fillText(label, 0, -rh / 2 - 4);
+    ctx.restore();
+  }
+}
+
+export function drawTower(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  tower: SimulationSnapshot['tower'],
+): void {
+  if (!tower || tower.length === 0) return;
+  for (const o of tower) {
+    const c = worldToScreen(cam, w, h, o.x, o.y);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(-o.rot);
+    const rw = o.hx * 2 * cam.zoom;
+    const rh = o.hy * 2 * cam.zoom;
+    ctx.fillStyle =
+      o.part === 'deck'
+        ? 'rgba(130, 115, 90, 0.85)'
+        : 'rgba(95, 100, 115, 0.8)';
+    ctx.strokeStyle = 'rgba(200, 190, 160, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.strokeRect(-rw / 2, -rh / 2, rw, rh);
+    ctx.restore();
+  }
+}
+
+export function drawTerrain(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  w: number,
+  h: number,
+  terrain: SimulationSnapshot['terrain'],
+): void {
+  if (!terrain || terrain.points.length < 2) return;
+  ctx.save();
+  ctx.beginPath();
+  const first = worldToScreen(cam, w, h, terrain.points[0].x, terrain.points[0].y);
+  ctx.moveTo(first.x, first.y);
+  for (let i = 1; i < terrain.points.length; i++) {
+    const p = worldToScreen(cam, w, h, terrain.points[i].x, terrain.points[i].y);
+    ctx.lineTo(p.x, p.y);
+  }
+  const last = terrain.points[terrain.points.length - 1];
+  const groundL = worldToScreen(cam, w, h, last.x, GROUND_Y);
+  const groundF = worldToScreen(cam, w, h, terrain.points[0].x, GROUND_Y);
+  ctx.lineTo(groundL.x, groundL.y);
+  ctx.lineTo(groundF.x, groundF.y);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(70, 95, 85, 0.45)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(140, 180, 150, 0.75)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(first.x, first.y);
+  for (let i = 1; i < terrain.points.length; i++) {
+    const p = worldToScreen(cam, w, h, terrain.points[i].x, terrain.points[i].y);
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function obstacleFill(kind: string): string {
+  switch (kind) {
+    case 'ramp':
+      return 'rgba(90, 120, 100, 0.75)';
+    case 'stair':
+      return 'rgba(100, 110, 130, 0.8)';
+    case 'pit':
+      return 'rgba(110, 90, 80, 0.8)';
+    case 'loop':
+      return 'rgba(90, 100, 130, 0.7)';
+    default:
+      return 'rgba(80, 100, 120, 0.8)';
+  }
+}
+
 export function drawSnapshot(
   ctx: CanvasRenderingContext2D,
   cam: Camera,
   w: number,
   h: number,
   snap: SimulationSnapshot,
+  options?: { skipScenery?: boolean },
 ): void {
+  if (!options?.skipScenery) {
+    drawTerrain(ctx, cam, w, h, snap.terrain);
+    drawTower(ctx, cam, w, h, snap.tower);
+    drawObstacles(ctx, cam, w, h, snap.obstacles);
+    drawScoreRegions(ctx, cam, w, h, snap.scoreRegions);
+    drawCourseMarkers(ctx, cam, w, h, snap.courseMarkers);
+  }
   const agents =
     snap.agents.length > 0
       ? snap.agents
@@ -169,6 +428,7 @@ export function drawSnapshot(
             muscles: snap.muscles,
             opacity: 1,
             focused: true,
+            appearance: snap.appearance,
           },
         ];
 
@@ -187,12 +447,72 @@ export function drawSnapshot(
       w,
       h,
       agent,
-      snap.appearance,
+      agent.appearance ?? snap.appearance,
       1 / 60,
       agent.focused ? 'focus' : 'ghost',
+      snap.hideMuscles === true,
+      snap.hideBones === true,
     );
     ctx.restore();
   }
+
+  drawCourseTimerHud(ctx, w, snap);
+}
+
+/** C2.10 — race clock HUD (starts when the model crosses the start line). */
+function drawCourseTimerHud(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  snap: SimulationSnapshot,
+): void {
+  const markers = snap.courseMarkers;
+  if (!markers || markers.length === 0) return;
+  const hasStart = markers.some((m) => m.kind === 'start');
+  const stats = snap.liveStats;
+  if (!stats && !hasStart) return;
+
+  const armed = stats?.courseArmed ?? false;
+  const finished = stats?.finished ?? false;
+  const raceTime = stats?.raceTime ?? null;
+  let label: string;
+  if (!armed) {
+    label = 'READY';
+  } else if (finished) {
+    label = `FINISH ${(raceTime ?? 0).toFixed(2)}s`;
+  } else {
+    label = (raceTime ?? 0).toFixed(2);
+  }
+
+  const pad = 10;
+  const boxW = Math.min(168, Math.max(110, w * 0.22));
+  const boxH = 36;
+  const x = w - boxW - pad;
+  const y = pad;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(8, 14, 18, 0.55)';
+  ctx.strokeStyle = finished
+    ? 'rgba(120, 220, 160, 0.85)'
+    : armed
+      ? 'rgba(200, 230, 210, 0.55)'
+      : 'rgba(160, 180, 190, 0.4)';
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, x, y, boxW, boxH, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = finished
+    ? 'rgba(160, 240, 190, 0.95)'
+    : armed
+      ? 'rgba(230, 245, 238, 0.95)'
+      : 'rgba(180, 200, 205, 0.75)';
+  ctx.font = armed && !finished
+    ? '600 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+    : '600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + boxW / 2, y + boxH / 2);
+  ctx.restore();
 }
 
 function drawAgent(
@@ -208,28 +528,34 @@ function drawAgent(
   appearance?: AppearanceRig,
   dt = 1 / 60,
   creatureKey = 'agent',
+  hideMuscles = false,
+  hideBones = false,
 ): void {
-  for (const m of agent.muscles) {
-    const a = worldToScreen(cam, w, h, m.ax, m.ay);
-    const b = worldToScreen(cam, w, h, m.bx, m.by);
-    const width =
-      2 + Math.abs(m.drive) * 4 + (m.action === 'idle' ? 0 : 1);
-    if (m.action === 'contract') ctx.strokeStyle = '#e85d4c';
-    else if (m.action === 'expand') ctx.strokeStyle = '#4c8fe8';
-    else ctx.strokeStyle = '#8a6a5a';
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+  if (!hideMuscles) {
+    for (const m of agent.muscles) {
+      const a = worldToScreen(cam, w, h, m.ax, m.ay);
+      const b = worldToScreen(cam, w, h, m.bx, m.by);
+      const width =
+        2 + Math.abs(m.drive) * 4 + (m.action === 'idle' ? 0 : 1);
+      if (m.action === 'contract') ctx.strokeStyle = '#e85d4c';
+      else if (m.action === 'expand') ctx.strokeStyle = '#4c8fe8';
+      else ctx.strokeStyle = '#8a6a5a';
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
   }
 
-  for (const bone of agent.bones) {
-    drawBone(ctx, cam, w, h, bone.x, bone.y, bone.angle, bone.halfLength, bone.halfWidth);
+  if (!hideBones) {
+    for (const bone of agent.bones) {
+      drawBone(ctx, cam, w, h, bone.x, bone.y, bone.angle, bone.halfLength, bone.halfWidth);
+    }
   }
 
-  const hideSkeleton = appearance?.hideSkeleton === true;
+  const hideSkeleton = hideBones || appearance?.hideSkeleton === true;
   if (!hideSkeleton) {
     for (const joint of agent.joints) {
       const p = worldToScreen(cam, w, h, joint.x, joint.y);
@@ -246,17 +572,9 @@ function drawAgent(
 
   if (isFeatureEnabled('spriteBodyParts') && appearance?.bodyParts?.length) {
     for (const part of appearance.bodyParts) {
-      const joint = agent.joints.find((j) => j.id === part.jointId);
-      const def = getBodyPart(part.assetId);
-      const img = getBodyPartImage(part.assetId);
-      if (!joint || !def || !img) continue;
-      const p = worldToScreen(cam, w, h, joint.x, joint.y);
-      const scale = (part.scale ?? def.defaultScale) * cam.zoom * 64;
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      if (part.mirror) ctx.scale(-1, 1);
-      ctx.drawImage(img, -scale * def.pivotX, -scale * def.pivotY, scale, scale);
-      ctx.restore();
+      const pose = resolveAgentBodyPartPose(agent, part);
+      if (!pose) continue;
+      drawBodyPartSprite(ctx, cam, w, h, part, pose);
     }
   }
 
@@ -264,8 +582,8 @@ function drawAgent(
     appearance.googlyEyes.forEach((eye, idx) => {
       const joint = agent.joints.find((j) => j.id === eye.jointId);
       if (!joint) return;
-      const dome = eye.domeRadius ?? 0.16;
-      const pupilR = dome * 0.45;
+      const dome = eye.domeRadius ?? GOOGLY_DOME_RADIUS;
+      const pupilR = dome * GOOGLY_BEAD_FRAC;
       const pupil = stepGooglyEye(
         `${creatureKey}:eye:${idx}`,
         joint.vx ?? 0,
@@ -274,12 +592,13 @@ function drawAgent(
         pupilR,
         dt,
       );
+      const off = resolveGooglyEyeOffset(eye);
       const p = worldToScreen(
         cam,
         w,
         h,
-        joint.x + (eye.offsetX ?? 0),
-        joint.y + (eye.offsetY ?? 0),
+        joint.x + off.x,
+        joint.y + off.y,
       );
       drawGooglyEye(ctx, p.x, p.y, cam.zoom, pupil);
     });
@@ -294,8 +613,11 @@ export function drawDesign(
   design: CreatureDesign,
   opts?: {
     selectedJointId?: number | null;
+    /** Multi-select highlight (C1.11); takes precedence over selectedJointId. */
+    selectedJointIds?: number[] | null;
     selectedBoneId?: number | null;
     selectedMuscleId?: number | null;
+    selectedBodyPartIndex?: number | null;
     hoverJointId?: number | null;
     hoverBoneId?: number | null;
     dragPreview?: {
@@ -307,6 +629,8 @@ export function drawDesign(
     } | null;
   },
 ): void {
+  const selectedJoints = new Set(opts?.selectedJointIds ?? []);
+  if (opts?.selectedJointId != null) selectedJoints.add(opts.selectedJointId);
   const jointPos = new Map(design.joints.map((j) => [j.id, j]));
   const boneCenter = new Map<number, { x: number; y: number }>();
 
@@ -322,11 +646,15 @@ export function drawDesign(
     const selected =
       opts?.selectedBoneId === bone.id || opts?.hoverBoneId === bone.id;
     const aero = (bone.aeroArea ?? 0) > 0;
-    const fill = selected
-      ? '#f0c040'
-      : aero
-        ? '#6ab0c8'
-        : '#6a8aaa';
+    const aeroFill =
+      bone.aeroType === 'wing'
+        ? '#7ec8a0'
+        : bone.aeroType === 'parachute'
+          ? '#d4a06a'
+          : bone.aeroType === 'glider'
+            ? '#6ab0c8'
+            : '#6ab0c8';
+    const fill = selected ? '#f0c040' : aero ? aeroFill : '#6a8aaa';
     drawBone(ctx, cam, w, h, cx, cy, angle, halfLength, 0.14, fill);
   }
 
@@ -378,7 +706,7 @@ export function drawDesign(
   for (const joint of design.joints) {
     const p = worldToScreen(cam, w, h, joint.x, joint.y);
     const selected =
-      opts?.selectedJointId === joint.id || opts?.hoverJointId === joint.id;
+      selectedJoints.has(joint.id) || opts?.hoverJointId === joint.id;
     const r = 0.28 * cam.zoom;
     ctx.fillStyle = selected ? '#f0c040' : '#d8dde6';
     ctx.beginPath();
@@ -405,6 +733,41 @@ export function drawDesign(
       ctx.beginPath();
       ctx.arc(p.x, p.y - r * 0.85, r * 0.35, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  // Body-part preview (bone/joint anchored).
+  if (isFeatureEnabled('spriteBodyParts') && design.appearance?.bodyParts?.length) {
+    design.appearance.bodyParts.forEach((part, index) => {
+      const pose = resolveBodyPartPose(design, part);
+      if (!pose) return;
+      drawBodyPartSprite(
+        ctx,
+        cam,
+        w,
+        h,
+        part,
+        pose,
+        opts?.selectedBodyPartIndex === index,
+      );
+    });
+  }
+
+  // Static googly preview in the editor (beads at rest).
+  if (isFeatureEnabled('googlyEyes') && design.appearance?.googlyEyes?.length) {
+    for (const eye of design.appearance.googlyEyes) {
+      const joint = jointPos.get(eye.jointId);
+      if (!joint) continue;
+      const dome = eye.domeRadius ?? GOOGLY_DOME_RADIUS;
+      const off = resolveGooglyEyeOffset(eye);
+      const p = worldToScreen(
+        cam,
+        w,
+        h,
+        joint.x + off.x,
+        joint.y + off.y,
+      );
+      drawGooglyEye(ctx, p.x, p.y, cam.zoom, restGooglyPupil(dome));
     }
   }
 }

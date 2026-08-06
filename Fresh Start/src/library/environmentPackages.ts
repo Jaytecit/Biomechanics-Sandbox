@@ -1,7 +1,8 @@
 /**
  * F4 — Environments repository (versioned localStorage).
- * Geometry stored only; not spawned until Wave 3 physics slices.
+ * Obstacles spawn via Simulation.setEnvironment when staticObstacles is on.
  */
+import { BUILTIN_GAUNTLET_ENV_ID, gauntletEnv } from '../env/gauntletEnv';
 import {
   cloneEnvironment,
   flatGroundEnv,
@@ -28,6 +29,8 @@ export interface EnvironmentPackage {
   source: EnvPackageSource;
   notes?: string;
 }
+
+export { BUILTIN_GAUNTLET_ENV_ID };
 
 export type RepoResult<T> =
   | { ok: true; value: T }
@@ -71,13 +74,29 @@ export function builtinFlatGround(): EnvironmentPackage {
   };
 }
 
+export function builtinGauntlet(): EnvironmentPackage {
+  const t = 0;
+  return {
+    schemaVersion: ENVIRONMENT_PACKAGE_SCHEMA,
+    id: BUILTIN_GAUNTLET_ENV_ID,
+    revision: 1,
+    createdAt: t,
+    updatedAt: t,
+    displayName: 'Gauntlet',
+    environment: gauntletEnv(),
+    source: 'builtin',
+    notes:
+      'Run → climb → launch → pit. Use Sprint + course stages for training.',
+  };
+}
+
 export function loadEnvironmentPackages(): EnvironmentPackage[] {
   return readAll().filter((p) => p.source !== 'builtin');
 }
 
-/** User packages plus the Flat Ground builtin for UI pickers. */
+/** User packages plus builtin courses for UI pickers. */
 export function listEnvironmentsForUi(): EnvironmentPackage[] {
-  return [builtinFlatGround(), ...loadEnvironmentPackages()];
+  return [builtinFlatGround(), builtinGauntlet(), ...loadEnvironmentPackages()];
 }
 
 export function saveNewEnvironmentPackage(
@@ -158,6 +177,12 @@ export function duplicateEnvironmentPackage(
   if (id === 'builtin_flat_ground') {
     return saveNewEnvironmentPackage(flatGroundEnv(), {
       displayName: name ?? 'Flat Ground Copy',
+      source: 'user',
+    });
+  }
+  if (id === BUILTIN_GAUNTLET_ENV_ID) {
+    return saveNewEnvironmentPackage(gauntletEnv(), {
+      displayName: name ?? 'Gauntlet Copy',
       source: 'user',
     });
   }

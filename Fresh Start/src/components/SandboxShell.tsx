@@ -4,7 +4,14 @@ import {
   type ReactNode,
 } from 'react';
 
-export type SandboxTabId = 'zone' | 'creatures' | 'edit' | 'train' | 'world';
+export type SandboxTabId =
+  | 'zone'
+  | 'creatures'
+  | 'edit'
+  | 'train'
+  | 'world'
+  | 'h2h'
+  | 'discoveries';
 
 export interface SandboxTab {
   id: SandboxTabId;
@@ -17,24 +24,61 @@ interface Props {
   activeTab: SandboxTabId;
   onActiveTabChange: (id: SandboxTabId) => void;
   viewport: ReactNode;
-  /** Simulate-mode train/evolve chrome overlaid under the ground band. */
+  /** Bottom chrome overlaid under the ground band (Train or World). */
   dock?: ReactNode | null;
+  /** Label in the dock bar (default Train). */
+  dockLabel?: string;
   dockCollapsed: boolean;
   onDockCollapsedChange: (collapsed: boolean) => void;
   /** Reports dock height in CSS px for camera bottom inset. */
   onDockHeightChange?: (heightPx: number) => void;
+  /**
+   * When true, tab buttons are rendered elsewhere (e.g. topbar).
+   * Sidebar still shows the active panel body.
+   */
+  hideTabRail?: boolean;
 }
 
-/** B3 — left exclusive tabs + optional bottom dock over the viewport. */
+/** Header tab rail — place between brand and immersive toggle. */
+export function SandboxTabRail({
+  tabs,
+  activeTab,
+  onActiveTabChange,
+}: {
+  tabs: SandboxTab[];
+  activeTab: SandboxTabId;
+  onActiveTabChange: (id: SandboxTabId) => void;
+}) {
+  return (
+    <div className="topbar-tabs" role="tablist" aria-label="Sandbox panels">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          aria-selected={tab.id === activeTab}
+          className={tab.id === activeTab ? 'active' : ''}
+          onClick={() => onActiveTabChange(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** B3 — left panel + optional bottom dock over the viewport. */
 export function SandboxShell({
   tabs,
   activeTab,
   onActiveTabChange,
   viewport,
   dock,
+  dockLabel = 'Train',
   dockCollapsed,
   onDockCollapsedChange,
   onDockHeightChange,
+  hideTabRail = false,
 }: Props) {
   const dockRef = useRef<HTMLDivElement>(null);
   const showDock = dock != null;
@@ -67,20 +111,22 @@ export function SandboxShell({
   return (
     <div className="main sandbox-shell">
       <aside className="sandbox-sidebar">
-        <div className="tab-rail" role="tablist" aria-label="Sandbox panels">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={tab.id === active?.id}
-              className={tab.id === active?.id ? 'active' : ''}
-              onClick={() => onActiveTabChange(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {!hideTabRail && (
+          <div className="tab-rail" role="tablist" aria-label="Sandbox panels">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={tab.id === active?.id}
+                className={tab.id === active?.id ? 'active' : ''}
+                onClick={() => onActiveTabChange(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div
           className="tab-panel"
           role="tabpanel"
@@ -100,7 +146,7 @@ export function SandboxShell({
             }
           >
             <div className="bottom-dock-bar">
-              <span className="bottom-dock-label">Train</span>
+              <span className="bottom-dock-label">{dockLabel}</span>
               <button
                 type="button"
                 className="bottom-dock-toggle"

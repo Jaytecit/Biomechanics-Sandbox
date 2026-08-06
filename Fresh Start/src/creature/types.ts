@@ -17,13 +17,18 @@ export interface JointDef {
   motorStrength?: number;
 }
 
+/** G10 structural aero part kind. Omit / none = legacy G9 area-only forces. */
+export type AeroType = 'wing' | 'glider' | 'parachute';
+
 export interface BoneDef {
   id: number;
   startJointId: number;
   endJointId: number;
   mass?: number;
-  /** Aero surface area scale (E6.6); cosmetic/force tag only. */
+  /** Aero surface area scale (E6.6 / G10); force tag. */
   aeroArea?: number;
+  /** Structural aero part type (G10). Requires aeroArea > 0 to act. */
+  aeroType?: AeroType;
 }
 
 export interface MuscleDef {

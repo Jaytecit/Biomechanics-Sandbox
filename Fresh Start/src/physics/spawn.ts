@@ -1,4 +1,4 @@
-import type { CreatureDesign } from '../creature/types';
+import type { AeroType, CreatureDesign } from '../creature/types';
 import type { RuntimeMuscle } from '../control/muscleDrive';
 import {
   ANGULAR_DAMPING,
@@ -8,6 +8,8 @@ import {
   JOINT_RADIUS,
   LINEAR_DAMPING,
   MUSCLE_MAX_FORCE,
+  SOFT_CCD_PREDICTION,
+  SOFT_CCD_SPEED_GATE,
 } from './constants';
 import { defaultColliderDesc, RAPIER } from './world';
 
@@ -29,6 +31,9 @@ export interface RuntimeBone {
   halfLength: number;
   halfWidth: number;
   aeroArea?: number;
+  aeroType?: AeroType;
+  /** Runtime parachute inflation 0…1 (not authored). */
+  chuteInflation: number;
 }
 
 export interface SpawnedCreature {
@@ -43,6 +48,33 @@ export interface SpawnedCreature {
   designedHeadY: number;
 }
 
+/** World translation applied on top of creature design coordinates. */
+export interface SpawnOffset {
+  x: number;
+  y: number;
+}
+
+/**
+ * Arm soft CCD on fast-moving creature parts only (anti-tunneling into
+ * obstacles without changing slow planted gait / idle coast).
+ * Call once per fixed physics step before `world.step()`.
+ */
+export function syncCreatureSoftCcd(creature: SpawnedCreature): void {
+  if (SOFT_CCD_PREDICTION <= 0) return;
+  const gate = SOFT_CCD_SPEED_GATE;
+  const pred = SOFT_CCD_PREDICTION;
+  for (const j of creature.joints) {
+    const v = j.body.linvel();
+    const speed = Math.hypot(v.x, v.y);
+    j.body.setSoftCcdPrediction(speed >= gate ? pred : 0);
+  }
+  for (const b of creature.bones) {
+    const v = b.body.linvel();
+    const speed = Math.hypot(v.x, v.y);
+    b.body.setSoftCcdPrediction(speed >= gate ? pred : 0);
+  }
+}
+
 function jointMap(design: CreatureDesign): Map<number, { x: number; y: number; mass: number }> {
   const map = new Map<number, { x: number; y: number; mass: number }>();
   for (const j of design.joints) {
@@ -54,7 +86,10 @@ function jointMap(design: CreatureDesign): Map<number, { x: number; y: number; m
 export function spawnCreature(
   world: RAPIER.World,
   design: CreatureDesign,
+  offset: SpawnOffset = { x: 0, y: 0 },
 ): SpawnedCreature {
+  const ox = Number.isFinite(offset.x) ? offset.x : 0;
+  const oy = Number.isFinite(offset.y) ? offset.y : 0;
   const jdefs = jointMap(design);
   const joints: RuntimeJoint[] = [];
   const jointBodies = new Map<number, RAPIER.RigidBody>();
@@ -64,7 +99,7 @@ export function spawnCreature(
     const mass = j.mass ?? DEFAULT_JOINT_MASS;
     const body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(j.x, j.y)
+        .setTranslation(j.x + ox, j.y + oy)
         .setLinearDamping(LINEAR_DAMPING)
         .setAngularDamping(ANGULAR_DAMPING),
     );
@@ -102,8 +137,8 @@ export function spawnCreature(
     const dy = end.y - start.y;
     const length = Math.hypot(dx, dy) || 0.01;
     const halfLength = length / 2;
-    const cx = (start.x + end.x) / 2;
-    const cy = (start.y + end.y) / 2;
+    const cx = (start.x + end.x) / 2 + ox;
+    const cy = (start.y + end.y) / 2 + oy;
     const angle = Math.atan2(dy, dx);
     const mass = b.mass ?? DEFAULT_BONE_MASS;
 
@@ -153,6 +188,8 @@ export function spawnCreature(
       halfLength,
       halfWidth: BONE_HALF_WIDTH,
       aeroArea: b.aeroArea,
+      aeroType: b.aeroType,
+      chuteInflation: 0,
     });
   }
 

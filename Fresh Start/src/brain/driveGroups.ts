@@ -67,6 +67,27 @@ export function expandChannelDrives(
   return out;
 }
 
+/**
+ * Collapse per-muscle drives to brain channel drives (first member of each
+ * channel wins — matches expandChannelDrives channel allocation order).
+ */
+export function collapseMuscleDrivesToChannels(
+  muscles: DriveGroupFields[],
+  muscleDrives: ArrayLike<number>,
+): number[] {
+  const n = countBrainActuatorChannels(muscles);
+  const out = new Array(n).fill(0);
+  const byId = brainActuatorChannelByMuscleId(muscles);
+  const seen = new Set<number>();
+  for (let i = 0; i < muscles.length; i++) {
+    const ch = byId.get(muscles[i].id) ?? i;
+    if (seen.has(ch)) continue;
+    seen.add(ch);
+    out[ch] = muscleDrives[i] ?? 0;
+  }
+  return out;
+}
+
 /** Next free positive driveGroup id. */
 export function nextDriveGroupId(muscles: DriveGroupFields[]): number {
   let max = 0;

@@ -29,6 +29,28 @@ function inferCategory(path: string, file: string): BodyPartCategory {
   return 'other';
 }
 
+/** World-unit default size when a part is attached — sized for sandbox creatures. */
+function defaultScaleForCategory(category: BodyPartCategory): number {
+  switch (category) {
+    case 'eye':
+      return 0.22;
+    case 'mouth':
+    case 'nose':
+      return 0.18;
+    case 'shoe':
+      return 0.2;
+    case 'face':
+      return 0.32;
+    case 'arm':
+    case 'leg':
+      return 0.3;
+    case 'body':
+      return 0.42;
+    default:
+      return 0.28;
+  }
+}
+
 function buildCatalog(modules: Record<string, string>): BodyPartDef[] {
   const out: BodyPartDef[] = [];
   for (const [path, url] of Object.entries(modules)) {
@@ -45,7 +67,7 @@ function buildCatalog(modules: Record<string, string>): BodyPartDef[] {
       url,
       pivotX: 0.5,
       pivotY: 0.5,
-      defaultScale: category === 'eye' ? 0.35 : 0.55,
+      defaultScale: defaultScaleForCategory(category),
       mirrorAllowed: true,
     });
   }

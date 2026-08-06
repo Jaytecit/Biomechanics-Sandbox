@@ -1,6 +1,7 @@
 /**
  * E1 — Goal catalog framework (thin wrappers over TaskId + zone membership).
  * E2 — Zone routing without eligibility gates.
+ * E6 — Expanded skill goals (Rapier-native scoring in taskScore.ts).
  */
 import type { TaskId } from '../brain/types';
 import type { ZoneId } from '../zones/zones';
@@ -25,10 +26,52 @@ export const GOAL_CATALOG: GoalDef[] = [
     zones: ['walking', 'free'],
   },
   {
+    id: 'speed',
+    task: 'speed',
+    title: 'Max Speed',
+    blurb: 'Peak burst plus travel on flat ground.',
+    zones: ['walking', 'free'],
+  },
+  {
+    id: 'sprint',
+    task: 'sprint',
+    title: 'Sprint Finish',
+    blurb: 'Race checkpoints to the finish — faster finish scores more. Place start/finish markers in World.',
+    zones: ['walking', 'free'],
+  },
+  {
+    id: 'stay',
+    task: 'stay',
+    title: 'Stay Tall',
+    blurb: 'Sustain a tall, supported posture.',
+    zones: ['walking', 'free'],
+  },
+  {
+    id: 'rough',
+    task: 'rough',
+    title: 'Rough terrain',
+    blurb: 'Forward locomotion over hills with foot-lift quality.',
+    zones: ['walking', 'free'],
+  },
+  {
     id: 'jump',
     task: 'jump',
-    title: 'Jump',
+    title: 'Jump Height',
     blurb: 'Peak height and hang time.',
+    zones: ['jumping', 'free'],
+  },
+  {
+    id: 'hang',
+    task: 'hang',
+    title: 'Hang Time',
+    blurb: 'Maximize airborne time in one jump.',
+    zones: ['jumping', 'free'],
+  },
+  {
+    id: 'longjump',
+    task: 'longjump',
+    title: 'Long Jump',
+    blurb: 'Jump as far right as you can.',
     zones: ['jumping', 'free'],
   },
   {
@@ -49,8 +92,16 @@ export const GOAL_CATALOG: GoalDef[] = [
     id: 'flight',
     task: 'flight',
     title: 'Flight',
-    blurb: 'Airtime with aero-tagged bones.',
+    blurb: 'Sustain altitude with aero parts — mean height beats one-flap coasts.',
     zones: ['flying', 'free'],
+  },
+  {
+    id: 'dance',
+    task: 'dance',
+    title: 'Dance',
+    blurb:
+      'Multi-track curriculum: imitate reactive disco, then refine freestyle for upright + beat sync (solo, Disco only).',
+    zones: ['disco'],
   },
 ];
 
@@ -60,9 +111,13 @@ export function getGoal(id: GoalId): GoalDef {
   return g;
 }
 
-/** Goals visible in a zone (`free` shows all). */
+/** Goals visible in a zone (`free` shows evolve goals; `disco` is audio-only). */
 export function goalsForZone(zone: ZoneId): GoalDef[] {
-  if (zone === 'free') return GOAL_CATALOG.slice();
+  // H6 dance is imitation-trained in Disco, not GA-evolved.
+  if (zone === 'free') {
+    return GOAL_CATALOG.filter((g) => g.id !== 'dance');
+  }
+  if (zone === 'disco') return [];
   return GOAL_CATALOG.filter((g) => g.zones.includes(zone));
 }
 

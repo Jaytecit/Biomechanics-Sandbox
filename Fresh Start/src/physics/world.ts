@@ -23,13 +23,20 @@ export function createWorld(): RAPIER.World {
   return world;
 }
 
+/**
+ * Membership bit 2 = ground / static world geometry.
+ * Creature joints/bones filter for this bit (see spawn.ts).
+ */
+export function groundCollisionGroups(): number {
+  return (0b0100 & 0xffff) | ((0xffff & 0xffff) << 16);
+}
+
 function addGround(world: RAPIER.World): void {
   // Infinite floor: halfspace solid is below the plane; outward normal points up.
   const groundBody = world.createRigidBody(
     RAPIER.RigidBodyDesc.fixed().setTranslation(0, GROUND_Y),
   );
-  // Membership bit 2 = ground; creature joints/bones filter for this bit.
-  const groups = (0b0100 & 0xffff) | ((0xffff & 0xffff) << 16);
+  const groups = groundCollisionGroups();
   world.createCollider(
     RAPIER.ColliderDesc.halfspace({ x: 0, y: 1 })
       .setFriction(GROUND_FRICTION)

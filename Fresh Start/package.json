@@ -13,8 +13,11 @@
     "smoke:evolve": "tsx scripts/smoke-evolve-run.mts",
     "smoke:evolve-ui": "tsx scripts/smoke-evolve-responsive.mts",
     "smoke:live": "tsx scripts/smoke-live-batch.mts",
+    "smoke:train-recipes": "tsx scripts/smoke-train-recipes.mts",
     "smoke:tasks": "tsx scripts/smoke-tasks.mts",
-    "smoke:all": "npm run smoke:firewall && npm run smoke:feel && npm run smoke:evolve && npm run smoke:tasks"
+    "smoke:disco-dance": "tsx scripts/smoke-disco-dance.mts",
+    "smoke:editor-selection": "tsx scripts/smoke-editor-selection.mts",
+    "smoke:all": "npm run smoke:firewall && npm run smoke:feel && npm run smoke:evolve && npm run smoke:tasks && npm run smoke:disco-dance && npm run smoke:train-recipes && npm run smoke:editor-selection"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.14.0",

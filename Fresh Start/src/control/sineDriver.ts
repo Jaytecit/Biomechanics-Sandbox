@@ -3,7 +3,8 @@
 export function sineMuscleOutputs(
   muscleCount: number,
   timeSec: number,
-  frequencyHz = 1.2,
+  /** Default ~matches PHASE_CLOCK_HZ so Oscillate can sustain flaps. */
+  frequencyHz = 2.5,
   phaseSpread = 0.7,
 ): number[] {
   const out: number[] = [];

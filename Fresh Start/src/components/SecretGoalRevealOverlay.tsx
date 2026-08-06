@@ -6,7 +6,6 @@ import confetti from 'canvas-confetti';
 import {
   secretGoalById,
   type SecretGoalFlavor,
-  type SecretGoalId,
 } from '../secrets/definitions';
 import type { SecretGoalDiscovery } from '../secrets/progress';
 
@@ -52,7 +51,7 @@ export function SecretGoalRevealOverlay({
   onDismiss,
 }: SecretGoalRevealOverlayProps) {
   const def = discovery
-    ? secretGoalById(discovery.secretGoalId as SecretGoalId)
+    ? secretGoalById(discovery.secretGoalId)
     : undefined;
 
   useEffect(() => {
